@@ -1,0 +1,16 @@
+# Go
+backend/token-usage
+backend/static/dist/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Data
+data/
+
+# Env
+.env
+
+# OS
+.DS_Store

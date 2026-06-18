@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  token-usage:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: token-usage:latest
+    container_name: token-usage
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - DB_HOST=${DB_HOST:-127.0.0.1}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER:-root}
+      - DB_PASSWORD=${DB_PASSWORD:-your_password_here}
+      - DB_NAME=${DB_NAME:-new-api}
+      - DB_TABLE_NAME=${DB_TABLE_NAME:-logs}
+      - PORT=${PORT:-8080}
+      - DATA_DIR=${DATA_DIR:-/data}
+      - TZ=${TZ:-Asia/Shanghai}
+    volumes:
+      - ./data:/data
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
