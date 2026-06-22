@@ -192,8 +192,8 @@ export default function Dashboard() {
         subtotal.total_tokens += item.total_tokens;
         subtotal.quota += item.quota;
         subtotal.request_count += item.request_count;
-        subtotal.cost_usd += item.cost_usd;
-        subtotal.cost_cny += item.cost_cny;
+        subtotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
+        subtotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
       }
       subtotalMap.set(tokenName, subtotal);
     }
@@ -324,8 +324,8 @@ export default function Dashboard() {
         row.token_name, row.model_name, row.request_count,
         fmtTok(row.prompt_tokens), fmtTok(row.cache_tokens), fmtTok(row.completion_tokens),
         fmtTok(row.total_tokens),
-        row.cost_usd > 0 ? row.cost_usd.toFixed(6) : '',
-        row.cost_cny > 0 ? row.cost_cny.toFixed(4) : '',
+        row.cost_usd > 0 ? (Math.round(row.cost_usd * 10000) / 10000).toFixed(4) : '',
+        row.cost_cny > 0 ? (Math.round(row.cost_cny * 10000) / 10000).toFixed(4) : ''
       ]);
       if (row.keyRowSpan > 1) {
         summaryKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.keyRowSpan - 1 });
@@ -343,8 +343,8 @@ export default function Dashboard() {
         r.date, r.token_name, r.model_name, r.request_count,
         fmtTok(r.prompt_tokens), fmtTok(r.cache_tokens), fmtTok(r.completion_tokens),
         fmtTok(r.total_tokens),
-        r.cost_usd > 0 ? r.cost_usd.toFixed(6) : '',
-        r.cost_cny > 0 ? r.cost_cny.toFixed(4) : '',
+        r.cost_usd > 0 ? (Math.round(r.cost_usd * 10000) / 10000).toFixed(4) : '',
+        r.cost_cny > 0 ? (Math.round(r.cost_cny * 10000) / 10000).toFixed(4) : '',
       ]);
     }
     applySheetBordersAndMerge(dailySheet, DAILY_COLS, 3);
@@ -359,9 +359,9 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
-  // Total cost
-  const totalUSD = useMemo(() => byModel.reduce((s, r) => s + r.cost_usd, 0), [byModel]);
-  const totalCNY = useMemo(() => byModel.reduce((s, r) => s + r.cost_cny, 0), [byModel]);
+  // Total cost — sum rounded per-model values directly (not via subtotals)
+  const totalUSD = useMemo(() => byModel.reduce((s, r) => s + Math.round(r.cost_usd * 10000) / 10000, 0), [byModel]);
+  const totalCNY = useMemo(() => byModel.reduce((s, r) => s + Math.round(r.cost_cny * 10000) / 10000, 0), [byModel]);
 
   const modelColumns: ColumnsType<ModelRow> = useMemo(() => [
     { title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', fixed: 'left', width: 160,

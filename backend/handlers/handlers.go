@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -322,6 +323,8 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 			entry := pricing.FindEntry(pc, s.ModelName)
 			costUSD := pricing.CalcCost(entry, pc.USDToCNY, s.PromptTokens, s.CompletionTokens, s.CacheTokens, useCachePrice)
 			costCNY := costUSD * pc.USDToCNY
+			roundedUSD := math.Round(costUSD*10000) / 10000
+			roundedCNY := math.Round(costCNY*10000) / 10000
 
 			vals := []interface{}{
 				s.TokenName, s.ModelName, s.RequestCount,
@@ -329,8 +332,8 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 				fmtTokensExcel(s.CacheTokens, humanFriendly),
 				fmtTokensExcel(s.CompletionTokens, humanFriendly),
 				fmtTokensExcel(s.TotalTokens, humanFriendly),
-				fmt.Sprintf("%.6f", costUSD),
-				fmt.Sprintf("%.4f", costCNY),
+				fmt.Sprintf("%.4f", roundedUSD),
+				fmt.Sprintf("%.4f", roundedCNY),
 			}
 			for col, v := range vals {
 				cell, _ := excelize.CoordinatesToCellName(col+1, currentRow)
@@ -346,8 +349,10 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 			subTotal.Cache += s.CacheTokens
 			subTotal.Completion += s.CompletionTokens
 			subTotal.Total += s.TotalTokens
-			subTotal.CostUSD += costUSD
-			subTotal.CostCNY += costCNY
+			subTotal.CostUSD += roundedUSD
+			subTotal.CostCNY += roundedCNY
+			grandTotal.CostUSD += roundedUSD
+			grandTotal.CostCNY += roundedCNY
 
 			i++
 			currentRow++
@@ -365,7 +370,7 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 			fmtTokensExcel(subTotal.Cache, humanFriendly),
 			fmtTokensExcel(subTotal.Completion, humanFriendly),
 			fmtTokensExcel(subTotal.Total, humanFriendly),
-			fmt.Sprintf("%.6f", subTotal.CostUSD),
+			fmt.Sprintf("%.4f", subTotal.CostUSD),
 			fmt.Sprintf("%.4f", subTotal.CostCNY),
 		}
 		for col, v := range subTotalVals {
@@ -378,14 +383,12 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 		f.SetCellStyle(sheet, subtotalStart, subtotalEnd, subtotalStyle)
 		currentRow++
 
-		// Accumulate grand total
+		// Accumulate grand total tokens (costs already accumulated per model row above)
 		grandTotal.Requests += subTotal.Requests
 		grandTotal.Prompt += subTotal.Prompt
 		grandTotal.Cache += subTotal.Cache
 		grandTotal.Completion += subTotal.Completion
 		grandTotal.Total += subTotal.Total
-		grandTotal.CostUSD += subTotal.CostUSD
-		grandTotal.CostCNY += subTotal.CostCNY
 	}
 
 	// Grand total row
@@ -394,7 +397,7 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 		fmtTokensExcel(grandTotal.Cache, humanFriendly),
 		fmtTokensExcel(grandTotal.Completion, humanFriendly),
 		fmtTokensExcel(grandTotal.Total, humanFriendly),
-		fmt.Sprintf("%.6f", grandTotal.CostUSD),
+		fmt.Sprintf("%.4f", grandTotal.CostUSD),
 		fmt.Sprintf("%.4f", grandTotal.CostCNY),
 	}
 	for col, v := range grandTotalVals {
@@ -482,7 +485,7 @@ func writeDailySheet(f *excelize.File, stats []models.DailyStat, pc *models.Pric
 				fmtTokensExcel(s.CacheTokens, humanFriendly),
 				fmtTokensExcel(s.CompletionTokens, humanFriendly),
 				fmtTokensExcel(s.TotalTokens, humanFriendly),
-				fmt.Sprintf("%.6f", costUSD),
+				fmt.Sprintf("%.4f", costUSD),
 				fmt.Sprintf("%.4f", costCNY),
 			}
 			for col, v := range vals {
@@ -518,7 +521,7 @@ func writeDailySheet(f *excelize.File, stats []models.DailyStat, pc *models.Pric
 			fmtTokensExcel(subTotal.Cache, humanFriendly),
 			fmtTokensExcel(subTotal.Completion, humanFriendly),
 			fmtTokensExcel(subTotal.Total, humanFriendly),
-			fmt.Sprintf("%.6f", subTotal.CostUSD),
+			fmt.Sprintf("%.4f", subTotal.CostUSD),
 			fmt.Sprintf("%.4f", subTotal.CostCNY),
 		}
 		for col, v := range subTotalVals {
@@ -547,7 +550,7 @@ func writeDailySheet(f *excelize.File, stats []models.DailyStat, pc *models.Pric
 		fmtTokensExcel(grandTotal.Cache, humanFriendly),
 		fmtTokensExcel(grandTotal.Completion, humanFriendly),
 		fmtTokensExcel(grandTotal.Total, humanFriendly),
-		fmt.Sprintf("%.6f", grandTotal.CostUSD),
+		fmt.Sprintf("%.4f", grandTotal.CostUSD),
 		fmt.Sprintf("%.4f", grandTotal.CostCNY),
 	}
 	for col, v := range grandTotalVals {
