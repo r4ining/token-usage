@@ -2,10 +2,7 @@ version: '3.8'
 
 services:
   token-usage:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: token-usage:latest
+    image: token-usage:v0.0.3
     container_name: token-usage
     restart: unless-stopped
     ports:

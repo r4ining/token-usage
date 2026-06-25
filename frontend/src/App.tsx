@@ -5,7 +5,7 @@ import zhCN from 'antd/locale/zh_CN';
 import Dashboard from './pages/Dashboard';
 import PriceConfig from './pages/PriceConfig';
 
-const { Header, Content, Sider } = Layout;
+const { Content, Sider } = Layout;
 
 type PageKey = 'dashboard' | 'prices';
 
@@ -38,34 +38,32 @@ function App() {
   return (
     <ConfigProvider locale={zhCN} theme={{ algorithm: theme.defaultAlgorithm }}>
       <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px', background: '#001529' }}>
-          <span style={{ color: '#fff', fontSize: 18, fontWeight: 600, letterSpacing: 1 }}>
-            Token 用量查询平台
-          </span>
-        </Header>
-        <Layout>
-          <Sider width={200} style={{ background: '#fff' }}>
-            <Menu
-              mode="inline"
-              selectedKeys={[page]}
-              style={{ height: '100%', borderRight: 0 }}
-              onClick={({ key }) => updatePage(key as PageKey)}
-              items={[
-                { key: 'dashboard', icon: <BarChartOutlined />, label: '用量统计' },
-                { key: 'prices', icon: <SettingOutlined />, label: '价格配置' },
-              ]}
-            />
-          </Sider>
-          <Layout style={{ padding: '24px' }}>
-            <Content style={{ background: 'transparent', minHeight: 280 }}>
-              <div style={{ display: page === 'dashboard' ? 'block' : 'none' }}>
-                <Dashboard />
-              </div>
-              <div style={{ display: page === 'prices' ? 'block' : 'none' }}>
-                <PriceConfig />
-              </div>
-            </Content>
-          </Layout>
+        <Sider width={200} style={{ background: '#fff' }}>
+          <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', height: 48, background: 'linear-gradient(135deg, #1890ff 0%, #36cfc9 100%)', boxShadow: '0 2px 8px rgba(24,144,255,0.2)' }}>
+            <span style={{ color: '#fff', fontSize: 15, fontWeight: 600, letterSpacing: 0.5, whiteSpace: 'nowrap' }}>
+              Token 用量查询平台
+            </span>
+          </div>
+          <Menu
+            mode="inline"
+            selectedKeys={[page]}
+            style={{ height: 'calc(100% - 48px)', borderRight: 0 }}
+            onClick={({ key }) => updatePage(key as PageKey)}
+            items={[
+              { key: 'dashboard', icon: <BarChartOutlined />, label: '用量统计' },
+              { key: 'prices', icon: <SettingOutlined />, label: '价格配置' },
+            ]}
+          />
+        </Sider>
+        <Layout style={{ padding: '24px' }}>
+          <Content style={{ background: 'transparent', minHeight: 280 }}>
+            <div style={{ display: page === 'dashboard' ? 'block' : 'none' }}>
+              <Dashboard />
+            </div>
+            <div style={{ display: page === 'prices' ? 'block' : 'none' }}>
+              <PriceConfig />
+            </div>
+          </Content>
         </Layout>
       </Layout>
     </ConfigProvider>

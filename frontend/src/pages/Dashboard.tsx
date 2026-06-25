@@ -18,6 +18,7 @@ const DATETIME_FMT = 'YYYY-MM-DD HH:mm:ss';
 
 type Granularity = 'today' | 'week' | 'month' | 'last30' | 'all' | 'custom';
 type ModelRow = ModelCost & { isSubtotal?: boolean; keyRowSpan: number; isGroupFirst?: boolean };
+type DailyRow = DailyCost & { isDateSubtotal?: boolean; dateRowSpan: number; isDateFirst?: boolean };
 
 const GRANULARITY_OPTIONS: { label: string; value: Granularity }[] = [
   { label: '今日', value: 'today' },
@@ -120,10 +121,12 @@ export default function Dashboard() {
   const [rawByModel, setRawByModel] = useState<ModelStat[]>([]);
   const [rawDaily, setRawDaily] = useState<DailyStat[]>([]);
   const [activeTab, setActiveTab] = useState('model');
-  const [humanFriendly, setHumanFriendly] = useState(false);
-  const [useCachePrice, setUseCachePrice] = useState(false);
+  const [humanFriendly, setHumanFriendly] = useState(true);
+  const [useCachePrice, setUseCachePrice] = useState(true);
   const [modelSortField, setModelSortField] = useState<keyof ModelCost | ''>('');
   const [modelSortOrder, setModelSortOrder] = useState<SortOrder>(null);
+  const [showDailySubtotals, setShowDailySubtotals] = useState(true);
+  const [dailySortOrder, setDailySortOrder] = useState<SortOrder>('ascend');
 
   useEffect(() => {
     fetchTokenNames()
@@ -236,6 +239,63 @@ export default function Dashboard() {
     return { rows, subtotals };
   }, [byModel, modelSortField, modelSortOrder]);
 
+  const groupedDailyData = useMemo(() => {
+    if (!daily.length) return { rows: [] as DailyRow[], grandTotal: null as DailyCost | null };
+
+    const groups = new Map<string, DailyCost[]>();
+    for (const item of daily) {
+      if (!groups.has(item.date)) groups.set(item.date, []);
+      groups.get(item.date)!.push(item);
+    }
+
+    const sortedEntries = [...groups.entries()].sort(([a], [b]) =>
+      dailySortOrder === 'descend' ? b.localeCompare(a) : a.localeCompare(b)
+    );
+
+    const grandTotal: DailyCost = {
+      date: '', token_name: '', model_name: '合计',
+      prompt_tokens: 0, completion_tokens: 0, cache_tokens: 0,
+      total_tokens: 0, quota: 0, request_count: 0,
+      cost_usd: 0, cost_cny: 0,
+    };
+
+    const rows: DailyRow[] = [];
+    for (const [date, items] of sortedEntries) {
+      const subtotal: DailyCost = {
+        date, token_name: '', model_name: '小计',
+        prompt_tokens: 0, completion_tokens: 0, cache_tokens: 0,
+        total_tokens: 0, quota: 0, request_count: 0,
+        cost_usd: 0, cost_cny: 0,
+      };
+      for (const item of items) {
+        subtotal.prompt_tokens += item.prompt_tokens;
+        subtotal.completion_tokens += item.completion_tokens;
+        subtotal.cache_tokens += item.cache_tokens;
+        subtotal.total_tokens += item.total_tokens;
+        subtotal.quota += item.quota;
+        subtotal.request_count += item.request_count;
+        subtotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
+        subtotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+        grandTotal.prompt_tokens += item.prompt_tokens;
+        grandTotal.completion_tokens += item.completion_tokens;
+        grandTotal.cache_tokens += item.cache_tokens;
+        grandTotal.total_tokens += item.total_tokens;
+        grandTotal.quota += item.quota;
+        grandTotal.request_count += item.request_count;
+        grandTotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
+        grandTotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+      }
+      const groupSize = showDailySubtotals ? items.length + 1 : items.length;
+      items.forEach((item, idx) => {
+        rows.push({ ...item, dateRowSpan: idx === 0 ? groupSize : 0, isDateFirst: idx === 0 });
+      });
+      if (showDailySubtotals) {
+        rows.push({ ...subtotal, isDateSubtotal: true, dateRowSpan: 0, isDateFirst: false });
+      }
+    }
+    return { rows, grandTotal };
+  }, [daily, showDailySubtotals, dailySortOrder]);
+
   const buildQueryParams = useCallback((): QueryParams => {
     const p: QueryParams = { token_names: selectedTokens };
     if (granularity !== 'custom') {
@@ -291,7 +351,7 @@ export default function Dashboard() {
           cell.border = allBorders;
         }
       }
-      // Merge Key column cells for grouped rows
+      // Merge first-column cells for grouped rows
       if (keyMerges) {
         for (const { startRow, endRow } of keyMerges) {
           if (endRow > startRow) {
@@ -309,52 +369,84 @@ export default function Dashboard() {
       void dataStartRow;
     }
 
+    const subtotalFill = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFE3F2FD' } };
+
     const wb = new ExcelJS.Workbook();
 
-    // ── Sheet 1: 模型汇总 ──
-    const summarySheet = wb.addWorksheet('模型汇总');
-    const SUMMARY_COLS = 9;
-    summarySheet.addRow(['查询时间区间', timeLabel]);
-    summarySheet.addRow(['Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '费用(USD)', '费用(CNY)']);
+    if (activeTab === 'model') {
+      // ── 按模型汇总 ──
+      const summarySheet = wb.addWorksheet('模型汇总');
+      const SUMMARY_COLS = 9;
+      summarySheet.addRow([`查询时间区间：${timeLabel}`]);
+      summarySheet.addRow(['Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '费用(USD)', '费用(CNY)']);
 
-    const summaryKeyMerges: { startRow: number; endRow: number }[] = [];
-    for (const row of groupedModelData.rows) {
-      const excelRow = summarySheet.rowCount + 1;
-      summarySheet.addRow([
-        row.token_name, row.model_name, row.request_count,
-        fmtTok(row.prompt_tokens), fmtTok(row.cache_tokens), fmtTok(row.completion_tokens),
-        fmtTok(row.total_tokens),
-        row.cost_usd > 0 ? (Math.round(row.cost_usd * 10000) / 10000).toFixed(4) : '',
-        row.cost_cny > 0 ? (Math.round(row.cost_cny * 10000) / 10000).toFixed(4) : ''
-      ]);
-      if (row.keyRowSpan > 1) {
-        summaryKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.keyRowSpan - 1 });
+      const summaryKeyMerges: { startRow: number; endRow: number }[] = [];
+      const summarySubtotalRows: number[] = [];
+      for (const row of groupedModelData.rows) {
+        const excelRow = summarySheet.rowCount + 1;
+        summarySheet.addRow([
+          row.token_name, row.model_name, row.request_count,
+          fmtTok(row.prompt_tokens), fmtTok(row.cache_tokens), fmtTok(row.completion_tokens),
+          fmtTok(row.total_tokens),
+          row.cost_usd > 0 ? (Math.round(row.cost_usd * 10000) / 10000).toFixed(4) : '',
+          row.cost_cny > 0 ? (Math.round(row.cost_cny * 10000) / 10000).toFixed(4) : '',
+        ]);
+        if (row.keyRowSpan > 1) {
+          summaryKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.keyRowSpan - 1 });
+        }
+        if (row.isSubtotal) summarySubtotalRows.push(excelRow);
+      }
+      applySheetBordersAndMerge(summarySheet, SUMMARY_COLS, 3, summaryKeyMerges);
+      for (const r of summarySubtotalRows) {
+        for (let c = 1; c <= SUMMARY_COLS; c++) summarySheet.getCell(r, c).fill = subtotalFill;
+      }
+    } else {
+      // ── 每日明细 ──
+      const dailySheet = wb.addWorksheet('每日明细');
+      const DAILY_COLS = 10;
+      dailySheet.addRow([`查询时间区间：${timeLabel}`]);
+      dailySheet.addRow(['日期', 'Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '费用(USD)', '费用(CNY)']);
+
+      const dateKeyMerges: { startRow: number; endRow: number }[] = [];
+      const dailySubtotalRows: number[] = [];
+      for (const row of groupedDailyData.rows) {
+        const excelRow = dailySheet.rowCount + 1;
+        dailySheet.addRow([
+          row.date.slice(0, 10), row.token_name, row.model_name, row.request_count,
+          fmtTok(row.prompt_tokens), fmtTok(row.cache_tokens), fmtTok(row.completion_tokens),
+          fmtTok(row.total_tokens),
+          row.cost_usd > 0 ? (Math.round(row.cost_usd * 10000) / 10000).toFixed(4) : '',
+          row.cost_cny > 0 ? (Math.round(row.cost_cny * 10000) / 10000).toFixed(4) : '',
+        ]);
+        if (row.dateRowSpan > 1) {
+          dateKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.dateRowSpan - 1 });
+        }
+        if (row.isDateSubtotal) dailySubtotalRows.push(excelRow);
+      }
+      if (groupedDailyData.grandTotal) {
+        const gt = groupedDailyData.grandTotal;
+        const gtRow = dailySheet.rowCount + 1;
+        dailySheet.addRow([
+          '合计', '', '', gt.request_count,
+          fmtTok(gt.prompt_tokens), fmtTok(gt.cache_tokens), fmtTok(gt.completion_tokens),
+          fmtTok(gt.total_tokens),
+          gt.cost_usd > 0 ? (Math.round(gt.cost_usd * 10000) / 10000).toFixed(4) : '',
+          gt.cost_cny > 0 ? (Math.round(gt.cost_cny * 10000) / 10000).toFixed(4) : '',
+        ]);
+        dailySubtotalRows.push(gtRow);
+      }
+      applySheetBordersAndMerge(dailySheet, DAILY_COLS, 3, dateKeyMerges);
+      for (const r of dailySubtotalRows) {
+        for (let c = 1; c <= DAILY_COLS; c++) dailySheet.getCell(r, c).fill = subtotalFill;
       }
     }
-    applySheetBordersAndMerge(summarySheet, SUMMARY_COLS, 3, summaryKeyMerges);
-
-    // ── Sheet 2: 每日明细 ──
-    const dailySheet = wb.addWorksheet('每日明细');
-    const DAILY_COLS = 10;
-    dailySheet.addRow(['查询时间区间', timeLabel]);
-    dailySheet.addRow(['日期', 'Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '费用(USD)', '费用(CNY)']);
-    for (const r of daily) {
-      dailySheet.addRow([
-        r.date, r.token_name, r.model_name, r.request_count,
-        fmtTok(r.prompt_tokens), fmtTok(r.cache_tokens), fmtTok(r.completion_tokens),
-        fmtTok(r.total_tokens),
-        r.cost_usd > 0 ? (Math.round(r.cost_usd * 10000) / 10000).toFixed(4) : '',
-        r.cost_cny > 0 ? (Math.round(r.cost_cny * 10000) / 10000).toFixed(4) : '',
-      ]);
-    }
-    applySheetBordersAndMerge(dailySheet, DAILY_COLS, 3);
 
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `token-usage-${dayjs().format('YYYYMMDD-HHmmss')}.xlsx`;
+    a.download = `token-usage-${activeTab}-${dayjs().format('YYYYMMDD-HHmmss')}.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -399,13 +491,22 @@ export default function Dashboard() {
       render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">未配置</Text> },
   ], [fmtTableToken, modelSortField, modelSortOrder]);
 
-  const dailyColumns: ColumnsType<DailyCost> = useMemo(() => [
-    { title: '日期', dataIndex: 'date', key: 'date', width: 120,
-      sorter: (a, b) => a.date.localeCompare(b.date), defaultSortOrder: 'descend' },
+  const dailyColumns: ColumnsType<DailyRow> = useMemo(() => [
+    { title: (
+        <span
+          style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
+          onClick={() => setDailySortOrder(prev => prev === 'descend' ? 'ascend' : 'descend')}
+        >
+          日期 {dailySortOrder === 'ascend' ? '↑' : '↓'}
+        </span>
+      ),
+      dataIndex: 'date', key: 'date', width: 130,
+      onCell: (record) => ({ rowSpan: record.dateRowSpan }),
+      render: (v: string) => v ? v.slice(0, 10) : '' },
     { title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', width: 160,
-      render: (v: string) => <Tag>{v}</Tag> },
+      render: (v: string) => v ? <Tag>{v}</Tag> : null },
     { title: '模型', dataIndex: 'model_name', key: 'model_name', width: 220,
-      render: (v: string) => <Text code>{v}</Text> },
+      render: (v: string, record) => record.isDateSubtotal ? <strong>{v}</strong> : <Text code>{v}</Text> },
     { title: '请求次数', dataIndex: 'request_count', key: 'request_count', align: 'right',
       render: (v: number) => v.toLocaleString() },
     { title: '输入 Tokens', dataIndex: 'prompt_tokens', key: 'prompt_tokens', align: 'right',
@@ -420,7 +521,7 @@ export default function Dashboard() {
       render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">-</Text> },
     { title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right',
       render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">-</Text> },
-  ], [fmtTableToken]);
+  ], [fmtTableToken, dailySortOrder]);
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -486,6 +587,13 @@ export default function Dashboard() {
               title="开启后：缓存读 Tokens 按配置的缓存价格单独计费，并从输入 Tokens 中扣除（适用 OpenAI 格式，避免双重计费）；关闭后：所有输入 Tokens 统一按输入价格计算。"
             >
               缓存读独立计费
+            </Button>
+            <Button
+              type={showDailySubtotals ? 'primary' : 'default'}
+              onClick={() => setShowDailySubtotals(v => !v)}
+              title="每日明细页中是否显示每日小计和整体合计行"
+            >
+              每日小计/合计
             </Button>
           </Space>
         </Space>
@@ -584,13 +692,42 @@ export default function Dashboard() {
                 key: 'daily',
                 label: '每日明细',
                 children: (
-                  <Table<DailyCost>
-                    dataSource={daily}
+                  <Table<DailyRow>
+                    dataSource={groupedDailyData.rows}
                     columns={dailyColumns}
-                    rowKey={(r) => `${r.date}-${r.token_name}-${r.model_name}`}
+                    rowKey={(_r, idx) => String(idx)}
                     size="small"
                     scroll={{ x: 'max-content' }}
                     pagination={{ pageSize: 100, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
+                    rowClassName={(record) => record.isDateSubtotal ? 'subtotal-row' : ''}
+                    summary={() => showDailySubtotals && groupedDailyData.grandTotal ? (
+                      <Table.Summary.Row>
+                        <Table.Summary.Cell index={0}><strong>合计</strong></Table.Summary.Cell>
+                        <Table.Summary.Cell index={1} />
+                        <Table.Summary.Cell index={2} />
+                        <Table.Summary.Cell index={3} align="right">
+                          {groupedDailyData.grandTotal.request_count.toLocaleString()}
+                        </Table.Summary.Cell>
+                        <Table.Summary.Cell index={4} align="right">
+                          {fmtTableToken(groupedDailyData.grandTotal.prompt_tokens)}
+                        </Table.Summary.Cell>
+                        <Table.Summary.Cell index={5} align="right">
+                          {groupedDailyData.grandTotal.cache_tokens > 0 ? fmtTableToken(groupedDailyData.grandTotal.cache_tokens) : '-'}
+                        </Table.Summary.Cell>
+                        <Table.Summary.Cell index={6} align="right">
+                          {fmtTableToken(groupedDailyData.grandTotal.completion_tokens)}
+                        </Table.Summary.Cell>
+                        <Table.Summary.Cell index={7} align="right">
+                          <strong>{fmtTableToken(groupedDailyData.grandTotal.total_tokens)}</strong>
+                        </Table.Summary.Cell>
+                        <Table.Summary.Cell index={8} align="right">
+                          {groupedDailyData.grandTotal.cost_usd > 0 && <Tag color="green">{fmtUSD(groupedDailyData.grandTotal.cost_usd)}</Tag>}
+                        </Table.Summary.Cell>
+                        <Table.Summary.Cell index={9} align="right">
+                          {groupedDailyData.grandTotal.cost_cny > 0 && <Tag color="blue">{fmtCNY(groupedDailyData.grandTotal.cost_cny)}</Tag>}
+                        </Table.Summary.Cell>
+                      </Table.Summary.Row>
+                    ) : null}
                   />
                 ),
               },
