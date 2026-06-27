@@ -123,6 +123,8 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('model');
   const [humanFriendly, setHumanFriendly] = useState(true);
   const [useCachePrice, setUseCachePrice] = useState(true);
+  const [calcCost, setCalcCost] = useState(true);
+  const [showUSD, setShowUSD] = useState(false);
   const [modelSortField, setModelSortField] = useState<keyof ModelCost | ''>('');
   const [modelSortOrder, setModelSortOrder] = useState<SortOrder>(null);
   const [showDailySubtotals, setShowDailySubtotals] = useState(true);
@@ -163,7 +165,7 @@ export default function Dashboard() {
 
   // Group byModel data by token_name with subtotals
   const groupedModelData = useMemo(() => {
-    if (!byModel.length) return { rows: [] as ModelRow[], subtotals: [] as { tokenName: string; data: ModelCost }[] };
+    if (!byModel.length) return { rows: [] as ModelRow[], subtotals: [] as { tokenName: string; data: ModelCost }[], grandTotal: null as ModelCost | null };
     
     const groups = new Map<string, ModelCost[]>();
     for (const item of byModel) {
@@ -236,7 +238,24 @@ export default function Dashboard() {
       rows.push({ ...subtotal, isSubtotal: true, keyRowSpan: 0, isGroupFirst: false });
     }
     
-    return { rows, subtotals };
+    const grandTotal: ModelCost = {
+      token_name: '合计', model_name: '',
+      prompt_tokens: 0, completion_tokens: 0, cache_tokens: 0,
+      total_tokens: 0, quota: 0, request_count: 0,
+      cost_usd: 0, cost_cny: 0,
+    };
+    for (const item of byModel) {
+      grandTotal.prompt_tokens += item.prompt_tokens;
+      grandTotal.completion_tokens += item.completion_tokens;
+      grandTotal.cache_tokens += item.cache_tokens;
+      grandTotal.total_tokens += item.total_tokens;
+      grandTotal.quota += item.quota;
+      grandTotal.request_count += item.request_count;
+      grandTotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
+      grandTotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+    }
+
+    return { rows, subtotals, grandTotal };
   }, [byModel, modelSortField, modelSortOrder]);
 
   const groupedDailyData = useMemo(() => {
@@ -376,25 +395,43 @@ export default function Dashboard() {
     if (activeTab === 'model') {
       // ── 按模型汇总 ──
       const summarySheet = wb.addWorksheet('模型汇总');
-      const SUMMARY_COLS = 9;
+      const SUMMARY_COLS = 7 + (calcCost && showUSD ? 1 : 0) + (calcCost ? 1 : 0);
       summarySheet.addRow([`查询时间区间：${timeLabel}`]);
-      summarySheet.addRow(['Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '费用(USD)', '费用(CNY)']);
+      const summaryHeader = ['Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens'];
+      if (calcCost && showUSD) summaryHeader.push('费用(USD)');
+      if (calcCost) summaryHeader.push('费用(CNY)');
+      summarySheet.addRow(summaryHeader);
+
+      const buildSummaryRow = (tokenName: string, modelName: string, rc: number, pt: number, ct: number, cpt: number, tt: number, usd: number, cny: number) => {
+        const cells: (string | number)[] = [tokenName, modelName, rc, fmtTok(pt), fmtTok(ct), fmtTok(cpt), fmtTok(tt)];
+        if (calcCost && showUSD) cells.push(usd > 0 ? (Math.round(usd * 10000) / 10000).toFixed(4) : '');
+        if (calcCost) cells.push(cny > 0 ? (Math.round(cny * 10000) / 10000).toFixed(4) : '');
+        return cells;
+      };
 
       const summaryKeyMerges: { startRow: number; endRow: number }[] = [];
       const summarySubtotalRows: number[] = [];
       for (const row of groupedModelData.rows) {
         const excelRow = summarySheet.rowCount + 1;
-        summarySheet.addRow([
+        summarySheet.addRow(buildSummaryRow(
           row.token_name, row.model_name, row.request_count,
-          fmtTok(row.prompt_tokens), fmtTok(row.cache_tokens), fmtTok(row.completion_tokens),
-          fmtTok(row.total_tokens),
-          row.cost_usd > 0 ? (Math.round(row.cost_usd * 10000) / 10000).toFixed(4) : '',
-          row.cost_cny > 0 ? (Math.round(row.cost_cny * 10000) / 10000).toFixed(4) : '',
-        ]);
+          row.prompt_tokens, row.cache_tokens, row.completion_tokens, row.total_tokens,
+          row.cost_usd, row.cost_cny,
+        ));
         if (row.keyRowSpan > 1) {
           summaryKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.keyRowSpan - 1 });
         }
         if (row.isSubtotal) summarySubtotalRows.push(excelRow);
+      }
+      if (groupedModelData.grandTotal) {
+        const gt = groupedModelData.grandTotal;
+        const gtRow = summarySheet.rowCount + 1;
+        summarySheet.addRow(buildSummaryRow(
+          '合计', '', gt.request_count,
+          gt.prompt_tokens, gt.cache_tokens, gt.completion_tokens, gt.total_tokens,
+          gt.cost_usd, gt.cost_cny,
+        ));
+        summarySubtotalRows.push(gtRow);
       }
       applySheetBordersAndMerge(summarySheet, SUMMARY_COLS, 3, summaryKeyMerges);
       for (const r of summarySubtotalRows) {
@@ -403,21 +440,29 @@ export default function Dashboard() {
     } else {
       // ── 每日明细 ──
       const dailySheet = wb.addWorksheet('每日明细');
-      const DAILY_COLS = 10;
+      const DAILY_COLS = 8 + (calcCost && showUSD ? 1 : 0) + (calcCost ? 1 : 0);
       dailySheet.addRow([`查询时间区间：${timeLabel}`]);
-      dailySheet.addRow(['日期', 'Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '费用(USD)', '费用(CNY)']);
+      const dailyHeader = ['日期', 'Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens'];
+      if (calcCost && showUSD) dailyHeader.push('费用(USD)');
+      if (calcCost) dailyHeader.push('费用(CNY)');
+      dailySheet.addRow(dailyHeader);
+
+      const buildDailyRow = (date: string, tokenName: string, modelName: string, rc: number, pt: number, ct: number, cpt: number, tt: number, usd: number, cny: number) => {
+        const cells: (string | number)[] = [date, tokenName, modelName, rc, fmtTok(pt), fmtTok(ct), fmtTok(cpt), fmtTok(tt)];
+        if (calcCost && showUSD) cells.push(usd > 0 ? (Math.round(usd * 10000) / 10000).toFixed(4) : '');
+        if (calcCost) cells.push(cny > 0 ? (Math.round(cny * 10000) / 10000).toFixed(4) : '');
+        return cells;
+      };
 
       const dateKeyMerges: { startRow: number; endRow: number }[] = [];
       const dailySubtotalRows: number[] = [];
       for (const row of groupedDailyData.rows) {
         const excelRow = dailySheet.rowCount + 1;
-        dailySheet.addRow([
+        dailySheet.addRow(buildDailyRow(
           row.date.slice(0, 10), row.token_name, row.model_name, row.request_count,
-          fmtTok(row.prompt_tokens), fmtTok(row.cache_tokens), fmtTok(row.completion_tokens),
-          fmtTok(row.total_tokens),
-          row.cost_usd > 0 ? (Math.round(row.cost_usd * 10000) / 10000).toFixed(4) : '',
-          row.cost_cny > 0 ? (Math.round(row.cost_cny * 10000) / 10000).toFixed(4) : '',
-        ]);
+          row.prompt_tokens, row.cache_tokens, row.completion_tokens, row.total_tokens,
+          row.cost_usd, row.cost_cny,
+        ));
         if (row.dateRowSpan > 1) {
           dateKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.dateRowSpan - 1 });
         }
@@ -426,13 +471,11 @@ export default function Dashboard() {
       if (groupedDailyData.grandTotal) {
         const gt = groupedDailyData.grandTotal;
         const gtRow = dailySheet.rowCount + 1;
-        dailySheet.addRow([
+        dailySheet.addRow(buildDailyRow(
           '合计', '', '', gt.request_count,
-          fmtTok(gt.prompt_tokens), fmtTok(gt.cache_tokens), fmtTok(gt.completion_tokens),
-          fmtTok(gt.total_tokens),
-          gt.cost_usd > 0 ? (Math.round(gt.cost_usd * 10000) / 10000).toFixed(4) : '',
-          gt.cost_cny > 0 ? (Math.round(gt.cost_cny * 10000) / 10000).toFixed(4) : '',
-        ]);
+          gt.prompt_tokens, gt.cache_tokens, gt.completion_tokens, gt.total_tokens,
+          gt.cost_usd, gt.cost_cny,
+        ));
         dailySubtotalRows.push(gtRow);
       }
       applySheetBordersAndMerge(dailySheet, DAILY_COLS, 3, dateKeyMerges);
@@ -455,7 +498,7 @@ export default function Dashboard() {
   const totalUSD = useMemo(() => byModel.reduce((s, r) => s + Math.round(r.cost_usd * 10000) / 10000, 0), [byModel]);
   const totalCNY = useMemo(() => byModel.reduce((s, r) => s + Math.round(r.cost_cny * 10000) / 10000, 0), [byModel]);
 
-  const modelColumns: ColumnsType<ModelRow> = useMemo(() => [
+  const modelColumns: ColumnsType<ModelRow> = useMemo(() => ([
     { title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', fixed: 'left', width: 160,
       onCell: (record) => ({ rowSpan: record.keyRowSpan }),
       render: (_v: string, record) => record.isGroupFirst ? <Tag>{record.token_name}</Tag> : null },
@@ -481,17 +524,17 @@ export default function Dashboard() {
       sorter: () => 0,
       sortOrder: modelSortField === 'total_tokens' ? modelSortOrder : null,
       render: (v: number) => <strong>{fmtTableToken(v)}</strong> },
-    { title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right',
+    ...(calcCost && showUSD ? [{ title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right' as const,
       sorter: () => 0,
       sortOrder: modelSortField === 'cost_usd' ? modelSortOrder : null,
-      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">未配置</Text> },
-    { title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right',
+      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
+    ...(calcCost ? [{ title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
       sorter: () => 0,
       sortOrder: modelSortField === 'cost_cny' ? modelSortOrder : null,
-      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">未配置</Text> },
-  ], [fmtTableToken, modelSortField, modelSortOrder]);
+      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
+  ] as ColumnsType<ModelRow>), [fmtTableToken, modelSortField, modelSortOrder, calcCost, showUSD]);
 
-  const dailyColumns: ColumnsType<DailyRow> = useMemo(() => [
+  const dailyColumns: ColumnsType<DailyRow> = useMemo(() => ([
     { title: (
         <span
           style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap' }}
@@ -517,11 +560,11 @@ export default function Dashboard() {
       render: (v: number) => fmtTableToken(v) },
     { title: '总 Tokens', dataIndex: 'total_tokens', key: 'total_tokens', align: 'right',
       render: (v: number) => <strong>{fmtTableToken(v)}</strong> },
-    { title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right',
-      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">-</Text> },
-    { title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right',
-      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">-</Text> },
-  ], [fmtTableToken, dailySortOrder]);
+    ...(calcCost && showUSD ? [{ title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right' as const,
+      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
+    ...(calcCost ? [{ title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
+      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
+  ] as ColumnsType<DailyRow>), [fmtTableToken, dailySortOrder, calcCost, showUSD]);
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -595,6 +638,21 @@ export default function Dashboard() {
             >
               每日小计/合计
             </Button>
+            <Button
+              type={calcCost ? 'primary' : 'default'}
+              onClick={() => setCalcCost(v => !v)}
+              title="是否根据价格配置计算并显示费用列"
+            >
+              是否计算费用
+            </Button>
+            <Button
+              type={showUSD ? 'primary' : 'default'}
+              onClick={() => setShowUSD(v => !v)}
+              disabled={!calcCost}
+              title="是否在费用列中同时显示美金（USD）"
+            >
+              包含美金计算
+            </Button>
           </Space>
         </Space>
       </Card>
@@ -622,15 +680,17 @@ export default function Dashboard() {
               <Statistic title="总 Tokens" value={fmtSummaryToken(summary.total_tokens)} />
             </Card>
           </Col>
-          <Col span={5}>
-            <Card size="small">
-              <Statistic
-                title="总费用 (USD / CNY)"
-                value={totalUSD > 0 ? `${fmtUSD(totalUSD)} / ${fmtCNY(totalCNY)}` : '未配置价格'}
-                valueStyle={{ fontSize: 16 }}
-              />
-            </Card>
-          </Col>
+          {calcCost && (
+            <Col span={5}>
+              <Card size="small">
+                <Statistic
+                  title={showUSD ? '总费用 (USD / CNY)' : '总费用 (CNY)'}
+                  value={calcCost ? (showUSD ? (totalUSD > 0 ? `${fmtUSD(totalUSD)} / ${fmtCNY(totalCNY)}` : '未配置价格') : (totalCNY > 0 ? fmtCNY(totalCNY) : '未配置价格')) : '-'}
+                  valueStyle={{ fontSize: 16 }}
+                />
+              </Card>
+            </Col>
+          )}
         </Row>
       )}
 
@@ -677,12 +737,16 @@ export default function Dashboard() {
                         <Table.Summary.Cell index={6} align="right">
                           <strong>{fmtTableToken(summary.total_tokens)}</strong>
                         </Table.Summary.Cell>
-                        <Table.Summary.Cell index={7} align="right">
-                          {totalUSD > 0 && <Tag color="green">{fmtUSD(totalUSD)}</Tag>}
-                        </Table.Summary.Cell>
-                        <Table.Summary.Cell index={8} align="right">
-                          {totalCNY > 0 && <Tag color="blue">{fmtCNY(totalCNY)}</Tag>}
-                        </Table.Summary.Cell>
+                        {calcCost && showUSD && (
+                          <Table.Summary.Cell index={7} align="right">
+                            {totalUSD > 0 && <Tag color="green">{fmtUSD(totalUSD)}</Tag>}
+                          </Table.Summary.Cell>
+                        )}
+                        {calcCost && (
+                          <Table.Summary.Cell index={8} align="right">
+                            {totalCNY > 0 && <Tag color="blue">{fmtCNY(totalCNY)}</Tag>}
+                          </Table.Summary.Cell>
+                        )}
                       </Table.Summary.Row>
                     )}
                   />
@@ -720,12 +784,16 @@ export default function Dashboard() {
                         <Table.Summary.Cell index={7} align="right">
                           <strong>{fmtTableToken(groupedDailyData.grandTotal.total_tokens)}</strong>
                         </Table.Summary.Cell>
-                        <Table.Summary.Cell index={8} align="right">
-                          {groupedDailyData.grandTotal.cost_usd > 0 && <Tag color="green">{fmtUSD(groupedDailyData.grandTotal.cost_usd)}</Tag>}
-                        </Table.Summary.Cell>
-                        <Table.Summary.Cell index={9} align="right">
-                          {groupedDailyData.grandTotal.cost_cny > 0 && <Tag color="blue">{fmtCNY(groupedDailyData.grandTotal.cost_cny)}</Tag>}
-                        </Table.Summary.Cell>
+                        {calcCost && showUSD && (
+                          <Table.Summary.Cell index={8} align="right">
+                            {groupedDailyData.grandTotal.cost_usd > 0 && <Tag color="green">{fmtUSD(groupedDailyData.grandTotal.cost_usd)}</Tag>}
+                          </Table.Summary.Cell>
+                        )}
+                        {calcCost && (
+                          <Table.Summary.Cell index={9} align="right">
+                            {groupedDailyData.grandTotal.cost_cny > 0 && <Tag color="blue">{fmtCNY(groupedDailyData.grandTotal.cost_cny)}</Tag>}
+                          </Table.Summary.Cell>
+                        )}
                       </Table.Summary.Row>
                     ) : null}
                   />
