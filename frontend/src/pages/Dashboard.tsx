@@ -129,6 +129,7 @@ export default function Dashboard() {
   const [modelSortOrder, setModelSortOrder] = useState<SortOrder>(null);
   const [showDailySubtotals, setShowDailySubtotals] = useState(true);
   const [dailySortOrder, setDailySortOrder] = useState<SortOrder>('ascend');
+  const [dailyOnlyTotals, setDailyOnlyTotals] = useState(false);
 
   useEffect(() => {
     fetchTokenNames()
@@ -304,16 +305,20 @@ export default function Dashboard() {
         grandTotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
         grandTotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
       }
-      const groupSize = showDailySubtotals ? items.length + 1 : items.length;
-      items.forEach((item, idx) => {
-        rows.push({ ...item, dateRowSpan: idx === 0 ? groupSize : 0, isDateFirst: idx === 0 });
-      });
-      if (showDailySubtotals) {
-        rows.push({ ...subtotal, isDateSubtotal: true, dateRowSpan: 0, isDateFirst: false });
+      if (dailyOnlyTotals) {
+        rows.push({ ...subtotal, model_name: '每日合计', isDateSubtotal: false, dateRowSpan: 1, isDateFirst: true });
+      } else {
+        const groupSize = showDailySubtotals ? items.length + 1 : items.length;
+        items.forEach((item, idx) => {
+          rows.push({ ...item, dateRowSpan: idx === 0 ? groupSize : 0, isDateFirst: idx === 0 });
+        });
+        if (showDailySubtotals) {
+          rows.push({ ...subtotal, isDateSubtotal: true, dateRowSpan: 0, isDateFirst: false });
+        }
       }
     }
     return { rows, grandTotal };
-  }, [daily, showDailySubtotals, dailySortOrder]);
+  }, [daily, showDailySubtotals, dailySortOrder, dailyOnlyTotals]);
 
   const buildQueryParams = useCallback((): QueryParams => {
     const p: QueryParams = { token_names: selectedTokens };
@@ -546,10 +551,10 @@ export default function Dashboard() {
       dataIndex: 'date', key: 'date', width: 130,
       onCell: (record) => ({ rowSpan: record.dateRowSpan }),
       render: (v: string) => v ? v.slice(0, 10) : '' },
-    { title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', width: 160,
-      render: (v: string) => v ? <Tag>{v}</Tag> : null },
-    { title: '模型', dataIndex: 'model_name', key: 'model_name', width: 220,
-      render: (v: string, record) => record.isDateSubtotal ? <strong>{v}</strong> : <Text code>{v}</Text> },
+    ...(dailyOnlyTotals ? [] : [{ title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', width: 160,
+      render: (v: string) => v ? <Tag>{v}</Tag> : null } as ColumnsType<DailyRow>[number]]),
+    { title: dailyOnlyTotals ? '每日合计' : '模型', dataIndex: 'model_name', key: 'model_name', width: 220,
+      render: (v: string, record) => (record.isDateSubtotal || dailyOnlyTotals) ? <strong>{v}</strong> : <Text code>{v}</Text> },
     { title: '请求次数', dataIndex: 'request_count', key: 'request_count', align: 'right',
       render: (v: number) => v.toLocaleString() },
     { title: '输入 Tokens', dataIndex: 'prompt_tokens', key: 'prompt_tokens', align: 'right',
@@ -564,7 +569,7 @@ export default function Dashboard() {
       render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
     ...(calcCost ? [{ title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
       render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
-  ] as ColumnsType<DailyRow>), [fmtTableToken, dailySortOrder, calcCost, showUSD]);
+  ] as ColumnsType<DailyRow>), [fmtTableToken, dailySortOrder, calcCost, showUSD, dailyOnlyTotals]);
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -635,8 +640,16 @@ export default function Dashboard() {
               type={showDailySubtotals ? 'primary' : 'default'}
               onClick={() => setShowDailySubtotals(v => !v)}
               title="每日明细页中是否显示每日小计和整体合计行"
+              disabled={dailyOnlyTotals}
             >
               每日小计/合计
+            </Button>
+            <Button
+              type={dailyOnlyTotals ? 'primary' : 'default'}
+              onClick={() => setDailyOnlyTotals(v => !v)}
+              title="每日明细页中只显示每日合计，不显示每个模型的明细"
+            >
+              仅显示每日合计
             </Button>
             <Button
               type={calcCost ? 'primary' : 'default'}
@@ -764,10 +777,10 @@ export default function Dashboard() {
                     scroll={{ x: 'max-content' }}
                     pagination={{ pageSize: 100, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
                     rowClassName={(record) => record.isDateSubtotal ? 'subtotal-row' : ''}
-                    summary={() => showDailySubtotals && groupedDailyData.grandTotal ? (
+                    summary={() => (showDailySubtotals || dailyOnlyTotals) && groupedDailyData.grandTotal ? (
                       <Table.Summary.Row>
                         <Table.Summary.Cell index={0}><strong>合计</strong></Table.Summary.Cell>
-                        <Table.Summary.Cell index={1} />
+                        {!dailyOnlyTotals && <Table.Summary.Cell index={1} />}
                         <Table.Summary.Cell index={2} />
                         <Table.Summary.Cell index={3} align="right">
                           {groupedDailyData.grandTotal.request_count.toLocaleString()}
