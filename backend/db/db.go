@@ -73,7 +73,7 @@ func GetSummary(p QueryParams) ([]models.ModelStat, error) {
 			"model_name, " +
 			"SUM(prompt_tokens) AS prompt_tokens, " +
 			"SUM(completion_tokens) AS completion_tokens, " +
-			"SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$.cache_tokens')) AS UNSIGNED)) AS cache_tokens, " +
+			"SUM(cache_tokens) AS cache_tokens, " +
 			"SUM(quota) AS quota, " +
 			"COUNT(*) AS request_count",
 	).Group("token_name, model_name").
@@ -122,7 +122,7 @@ func GetDailyStats(p QueryParams) ([]models.DailyStat, error) {
 			"model_name, " +
 			"SUM(prompt_tokens) AS prompt_tokens, " +
 			"SUM(completion_tokens) AS completion_tokens, " +
-			"SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$.cache_tokens')) AS UNSIGNED)) AS cache_tokens, " +
+			"SUM(cache_tokens) AS cache_tokens, " +
 			"SUM(quota) AS quota, " +
 			"COUNT(*) AS request_count",
 	).Group("date, token_name, model_name").
@@ -150,9 +150,9 @@ func GetDailyStats(p QueryParams) ([]models.DailyStat, error) {
 	return stats, nil
 }
 
-func buildBaseQuery(p QueryParams) *gorm.DB {
-	tx := DB.Table(p.TableName).Where("type = 2")
-
+// applyCommonFilters applies the token_names/time-range filters shared by
+// all stats queries.
+func applyCommonFilters(tx *gorm.DB, p QueryParams) *gorm.DB {
 	if len(p.TokenNames) > 0 {
 		placeholders := make([]string, len(p.TokenNames))
 		args := make([]interface{}, len(p.TokenNames))
@@ -168,8 +168,67 @@ func buildBaseQuery(p QueryParams) *gorm.DB {
 	if p.End > 0 {
 		tx = tx.Where("created_at < ?", p.End)
 	}
+	return tx
+}
+
+// abnormalCondition is the SQL condition identifying an abnormal request:
+// a streaming request whose first-response-time (frt) is negative.
+const abnormalCondition = "is_stream = 1 AND frt < 0"
+
+func buildBaseQuery(p QueryParams) *gorm.DB {
+	tx := applyCommonFilters(DB.Table(p.TableName).Where("type = 2"), p)
 	if p.ExcludeAbnormal {
-		tx = tx.Where("NOT (is_stream = 1 AND CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$.frt')) AS SIGNED) < 0)")
+		tx = tx.Where("NOT (" + abnormalCondition + ")")
 	}
 	return tx
+}
+
+// GetAbnormalLogs returns individual abnormal request records (streaming
+// requests with frt < 0) matching the given filters.
+func GetAbnormalLogs(p QueryParams) ([]models.AbnormalLog, error) {
+	tx := applyCommonFilters(DB.Table(p.TableName).Where("type = 2"), p).
+		Where(abnormalCondition)
+
+	type row struct {
+		TokenName        string `gorm:"column:token_name"`
+		ModelName        string `gorm:"column:model_name"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		CacheTokens      int64  `gorm:"column:cache_tokens"`
+		Quota            int64  `gorm:"column:quota"`
+		CreatedAt        string `gorm:"column:created_at_str"`
+		ErrorReason      string `gorm:"column:error_reason"`
+	}
+
+	var rows []row
+	err := tx.Select(
+		"token_name, " +
+			"model_name, " +
+			"prompt_tokens, " +
+			"completion_tokens, " +
+			"cache_tokens, " +
+			"quota, " +
+			"DATE_FORMAT(FROM_UNIXTIME(created_at), '%Y-%m-%d %H:%i:%s') AS created_at_str, " +
+			"IFNULL(JSON_EXTRACT(other, '$.stream_status'), '') AS error_reason",
+	).Order("created_at DESC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	logs := make([]models.AbnormalLog, 0, len(rows))
+	for _, r := range rows {
+		logs = append(logs, models.AbnormalLog{
+			TokenName:        r.TokenName,
+			ModelName:        r.ModelName,
+			PromptTokens:     r.PromptTokens,
+			CompletionTokens: r.CompletionTokens,
+			CacheTokens:      r.CacheTokens,
+			TotalTokens:      r.PromptTokens + r.CompletionTokens,
+			RequestCount:     1,
+			Quota:            r.Quota,
+			CreatedAt:        r.CreatedAt,
+			ErrorReason:      r.ErrorReason,
+		})
+	}
+	return logs, nil
 }

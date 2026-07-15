@@ -8,7 +8,7 @@ Deploy the token-usage application to the remote server `root@10.10.249.137`.
 
 ## Rules
 
-- Image tag format: `token-usage:<version>` (e.g. `token-usage:v0.0.1`)
+- Image tag format: `registry.sy.com/base/token-usage:<version>` (e.g. `registry.sy.com/base/token-usage:v0.0.1`)
 - Version format: `v<major>.<minor>.<patch>` (e.g. `v0.0.1`)
 - **Never** use `latest` as a tag
 - **Never** use `build:` in docker-compose.yml — always use pre-built images
@@ -50,6 +50,6 @@ If you need to deploy manually:
 
 1. Increment version in `VERSION` file
 2. Sync code: `rsync -avz --exclude='data/' --exclude='.git/' --exclude='node_modules/' ./ root@10.10.249.137:/root/token-usage/`
-3. Build on remote: `ssh root@10.10.249.137 "cd /root/token-usage && docker build -t token-usage:<version> ."`
-4. Update `docker-compose.yml` image tag to `token-usage:<version>`
+3. Build on remote: `ssh root@10.10.249.137 "cd /root/token-usage && docker build -t registry.sy.com/base/token-usage:<version> ."`
+4. Update `docker-compose.yml` image tag to `registry.sy.com/base/token-usage:<version>`
 5. Deploy: `ssh root@10.10.249.137 "cd /root/token-usage && docker compose down && docker compose up -d"`

@@ -24,7 +24,9 @@ func Register(r *gin.Engine, cfg *config.Config) {
 	api.GET("/tokens", func(c *gin.Context) { getTokens(c, cfg) })
 	api.GET("/stats/summary", func(c *gin.Context) { getSummary(c, cfg) })
 	api.GET("/stats/daily", func(c *gin.Context) { getDaily(c, cfg) })
+	api.GET("/stats/abnormal", func(c *gin.Context) { getAbnormal(c, cfg) })
 	api.GET("/export", func(c *gin.Context) { exportExcel(c, cfg) })
+	api.GET("/export/abnormal", func(c *gin.Context) { exportAbnormalExcel(c, cfg) })
 	api.GET("/prices", func(c *gin.Context) { getPrices(c, cfg) })
 	api.POST("/prices", func(c *gin.Context) { savePrices(c, cfg) })
 }
@@ -140,6 +142,46 @@ func getDaily(c *gin.Context, cfg *config.Config) {
 	withCost := enrichDailyStats(stats, pc, useCachePrice)
 
 	c.JSON(http.StatusOK, gin.H{"data": withCost})
+}
+
+func getAbnormal(c *gin.Context, cfg *config.Config) {
+	p := parseQueryParams(c, cfg.DBTable)
+	logs, err := db.GetAbnormalLogs(p)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": logs})
+}
+
+func exportAbnormalExcel(c *gin.Context, cfg *config.Config) {
+	p := parseQueryParams(c, cfg.DBTable)
+	humanFriendly := c.Query("human_friendly") == "1"
+
+	logs, err := db.GetAbnormalLogs(p)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	timeRange := formatTimeRange(p.Start, p.End)
+	writeAbnormalSheet(f, logs, timeRange, humanFriendly)
+
+	f.DeleteSheet("Sheet1")
+
+	var buf bytes.Buffer
+	if err := f.Write(&buf); err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	filename := fmt.Sprintf("token-usage-abnormal-%s.xlsx", time.Now().Format("20060102-150405"))
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
 }
 
 func getPrices(c *gin.Context, cfg *config.Config) {
@@ -411,6 +453,48 @@ func writeSummarySheet(f *excelize.File, stats []models.ModelStat, pc *models.Pr
 	grandTotalStart, _ := excelize.CoordinatesToCellName(1, currentRow)
 	grandTotalEnd, _ := excelize.CoordinatesToCellName(colCount, currentRow)
 	f.SetCellStyle(sheet, grandTotalStart, grandTotalEnd, borderStyle)
+}
+
+func writeAbnormalSheet(f *excelize.File, logs []models.AbnormalLog, timeRange string, humanFriendly bool) {
+	sheet := "异常请求"
+	f.NewSheet(sheet)
+
+	colCount := 8
+	lastCol, _ := excelize.ColumnNumberToName(colCount)
+
+	borderStyle, _ := f.NewStyle(&excelize.Style{
+		Border: []excelize.Border{{Type: "left", Color: "000000", Style: 1}, {Type: "top", Color: "000000", Style: 1}, {Type: "right", Color: "000000", Style: 1}, {Type: "bottom", Color: "000000", Style: 1}},
+	})
+
+	f.SetCellValue(sheet, "A1", "查询时间区间："+timeRange)
+	f.MergeCell(sheet, "A1", lastCol+"1")
+
+	headers := []string{"时间", "Key名称", "模型", "输入Tokens", "缓存读Tokens", "输出Tokens", "总Tokens", "错误原因"}
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 2)
+		f.SetCellValue(sheet, cell, h)
+	}
+	f.SetCellStyle(sheet, "A2", lastCol+"2", borderStyle)
+
+	currentRow := 3
+	for _, l := range logs {
+		vals := []interface{}{
+			l.CreatedAt, l.TokenName, l.ModelName,
+			fmtTokensExcel(l.PromptTokens, humanFriendly),
+			fmtTokensExcel(l.CacheTokens, humanFriendly),
+			fmtTokensExcel(l.CompletionTokens, humanFriendly),
+			fmtTokensExcel(l.TotalTokens, humanFriendly),
+			l.ErrorReason,
+		}
+		for col, v := range vals {
+			cell, _ := excelize.CoordinatesToCellName(col+1, currentRow)
+			f.SetCellValue(sheet, cell, v)
+		}
+		rowStart, _ := excelize.CoordinatesToCellName(1, currentRow)
+		rowEnd, _ := excelize.CoordinatesToCellName(colCount, currentRow)
+		f.SetCellStyle(sheet, rowStart, rowEnd, borderStyle)
+		currentRow++
+	}
 }
 
 func writeDailySheet(f *excelize.File, stats []models.DailyStat, pc *models.PriceConfig, timeRange string, humanFriendly bool, useCachePrice bool) {

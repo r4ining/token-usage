@@ -96,3 +96,18 @@ type DailyCost struct {
 	CostUSD float64 `json:"cost_usd"`
 	CostCNY float64 `json:"cost_cny"`
 }
+
+// AbnormalLog represents a single abnormal request record
+// (streaming request with frt < 0), for detailed inspection/export.
+type AbnormalLog struct {
+	TokenName        string `json:"token_name"`
+	ModelName        string `json:"model_name"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	CacheTokens      int64  `json:"cache_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	RequestCount     int64  `json:"request_count"`
+	Quota            int64  `json:"quota"`
+	CreatedAt        string `json:"created_at"`
+	ErrorReason      string `json:"error_reason"`
+}

@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Button, Card, Col, DatePicker, message, Row, Select, Space,
-  Statistic, Table, Tabs, Tag, Typography, Segmented,
+  Statistic, Table, Tabs, Tag, Tooltip, Typography, Segmented,
 } from 'antd';
-import { DownloadOutlined, NumberOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, InfoCircleOutlined, NumberOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { SortOrder } from 'antd/es/table/interface';
 import dayjs, { Dayjs } from 'dayjs';
 import ExcelJS from 'exceljs';
-import { fetchDaily, fetchPrices, fetchSummary, fetchTokenNames, QueryParams } from '../api';
-import type { DailyCost, DailyStat, ModelCost, ModelStat, PriceConfig, PriceEntry, SummaryResult } from '../types';
+import { fetchAbnormal, fetchDaily, fetchPrices, fetchSummary, fetchTokenNames, QueryParams } from '../api';
+import type { AbnormalLog, DailyCost, DailyStat, ModelCost, ModelStat, PriceConfig, PriceEntry, SummaryResult } from '../types';
 
 const { RangePicker } = DatePicker;
 const { Text } = Typography;
@@ -120,6 +120,7 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<SummaryResult | null>(null);
   const [rawByModel, setRawByModel] = useState<ModelStat[]>([]);
   const [rawDaily, setRawDaily] = useState<DailyStat[]>([]);
+  const [abnormalLogs, setAbnormalLogs] = useState<AbnormalLog[]>([]);
   const [activeTab, setActiveTab] = useState('model');
   const [humanFriendly, setHumanFriendly] = useState(true);
   const [useCachePrice, setUseCachePrice] = useState(true);
@@ -130,7 +131,7 @@ export default function Dashboard() {
   const [showDailySubtotals, setShowDailySubtotals] = useState(true);
   const [dailySortOrder, setDailySortOrder] = useState<SortOrder>('ascend');
   const [dailyOnlyTotals, setDailyOnlyTotals] = useState(false);
-  const [excludeAbnormal, setExcludeAbnormal] = useState(true);
+  const [excludeAbnormal, setExcludeAbnormal] = useState(false);
 
   useEffect(() => {
     fetchTokenNames()
@@ -337,15 +338,20 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const p = buildQueryParams();
-      const [summaryRes, dailyRes, pc] = await Promise.all([
+      // Abnormal-log query targets the abnormal records themselves, so it
+      // should not be affected by the "排除异常请求" toggle.
+      const abnormalParams: QueryParams = { ...p, exclude_abnormal: false };
+      const [summaryRes, dailyRes, abnormalRes, pc] = await Promise.all([
         fetchSummary(p),
         fetchDaily(p),
+        fetchAbnormal(abnormalParams),
         fetchPrices(),
       ]);
       setPriceConfig(pc);
       setSummary(summaryRes.summary);
       setRawByModel(summaryRes.summary.by_model);
       setRawDaily(dailyRes);
+      setAbnormalLogs(abnormalRes);
     } catch (e: unknown) {
       message.error('查询失败: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -444,6 +450,20 @@ export default function Dashboard() {
       for (const r of summarySubtotalRows) {
         for (let c = 1; c <= SUMMARY_COLS; c++) summarySheet.getCell(r, c).fill = subtotalFill;
       }
+    } else if (activeTab === 'abnormal') {
+      // ── 异常请求明细 ──
+      const abnormalSheet = wb.addWorksheet('异常请求');
+      const ABNORMAL_COLS = 8;
+      abnormalSheet.addRow([`查询时间区间：${timeLabel}`]);
+      abnormalSheet.addRow(['时间', 'Key名称', '模型', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens', '错误原因']);
+      for (const log of abnormalLogs) {
+        abnormalSheet.addRow([
+          log.created_at, log.token_name, log.model_name,
+          fmtTok(log.prompt_tokens), fmtTok(log.cache_tokens), fmtTok(log.completion_tokens), fmtTok(log.total_tokens),
+          log.error_reason,
+        ]);
+      }
+      applySheetBordersAndMerge(abnormalSheet, ABNORMAL_COLS, 3);
     } else {
       // ── 每日明细 ──
       const dailySheet = wb.addWorksheet('每日明细');
@@ -573,6 +593,24 @@ export default function Dashboard() {
       render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
   ] as ColumnsType<DailyRow>), [fmtTableToken, dailySortOrder, calcCost, showUSD, dailyOnlyTotals]);
 
+  const abnormalColumns: ColumnsType<AbnormalLog> = useMemo(() => ([
+    { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 170 },
+    { title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', width: 160,
+      render: (v: string) => <Tag>{v}</Tag> },
+    { title: '模型', dataIndex: 'model_name', key: 'model_name', width: 200,
+      render: (v: string) => <Text code>{v}</Text> },
+    { title: '输入 Tokens', dataIndex: 'prompt_tokens', key: 'prompt_tokens', align: 'right',
+      render: (v: number) => fmtTableToken(v) },
+    { title: '缓存读 Tokens', dataIndex: 'cache_tokens', key: 'cache_tokens', align: 'right',
+      render: (v: number) => v > 0 ? fmtTableToken(v) : <Text type="secondary">-</Text> },
+    { title: '输出 Tokens', dataIndex: 'completion_tokens', key: 'completion_tokens', align: 'right',
+      render: (v: number) => fmtTableToken(v) },
+    { title: '总 Tokens', dataIndex: 'total_tokens', key: 'total_tokens', align: 'right',
+      render: (v: number) => <strong>{fmtTableToken(v)}</strong> },
+    { title: '错误原因', dataIndex: 'error_reason', key: 'error_reason',
+      render: (v: string) => <Text code style={{ whiteSpace: 'pre-wrap' }}>{v}</Text> },
+  ] as ColumnsType<AbnormalLog>), [fmtTableToken]);
+
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       {/* Filter bar */}
@@ -615,67 +653,131 @@ export default function Dashboard() {
             </Text>
           </Space>
 
-          {/* Row 3: Action Buttons */}
+          {/* Row 3: Query-condition buttons (need re-query to take effect) */}
           <Space wrap size="middle" align="center">
-            <Text style={{ fontSize: 14, minWidth: 80 }}>操作：</Text>
-            <Button type="primary" icon={<ReloadOutlined />} loading={loading} onClick={query}>
-              查询
-            </Button>
-            <Button icon={<DownloadOutlined />} onClick={handleExport} disabled={!summary}>
-              导出 Excel
-            </Button>
-            <Button
-              type={humanFriendly ? 'primary' : 'default'}
-              icon={<NumberOutlined />}
-              onClick={() => setHumanFriendly(h => !h)}
-            >
-              简化数字显示
-            </Button>
-            <Button
-              type={useCachePrice ? 'primary' : 'default'}
-              onClick={() => setUseCachePrice(v => !v)}
-              title="开启后：缓存读 Tokens 按配置的缓存价格单独计费，并从输入 Tokens 中扣除（适用 OpenAI 格式，避免双重计费）；关闭后：所有输入 Tokens 统一按输入价格计算。"
-            >
-              缓存读独立计费
-            </Button>
-            <Button
-              type={showDailySubtotals ? 'primary' : 'default'}
-              onClick={() => setShowDailySubtotals(v => !v)}
-              title="每日明细页中是否显示每日小计和整体合计行"
-              disabled={dailyOnlyTotals}
-            >
-              每日小计/合计
-            </Button>
-            <Button
-              type={dailyOnlyTotals ? 'primary' : 'default'}
-              onClick={() => setDailyOnlyTotals(v => !v)}
-              title="每日明细页中只显示每日合计，不显示每个模型的明细"
-            >
-              仅显示每日合计
-            </Button>
-            <Button
-              type={calcCost ? 'primary' : 'default'}
-              onClick={() => setCalcCost(v => !v)}
-              title="是否根据价格配置计算并显示费用列"
-            >
-              是否计算费用
-            </Button>
-            <Button
-              type={showUSD ? 'primary' : 'default'}
-              onClick={() => setShowUSD(v => !v)}
-              disabled={!calcCost}
-              title="是否在费用列中同时显示美金（USD）"
-            >
-              包含美金计算
-            </Button>
-            <Button
-              type={excludeAbnormal ? 'primary' : 'default'}
-              onClick={() => setExcludeAbnormal(v => !v)}
+            <Text style={{ fontSize: 14, minWidth: 80 }}>
+              查询条件
+              <Tooltip title="修改后需重新点击「查询」生效" mouseEnterDelay={0} color="rgba(0,0,0,0.78)" overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}>
+                <InfoCircleOutlined style={{ marginLeft: 4, color: '#faad14', cursor: 'help' }} />
+              </Tooltip>：
+            </Text>
+            <Tooltip
               title="开启后：排除流式请求中 frt < 0 的异常请求，不纳入统计"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
             >
-              排除异常请求
-            </Button>
+              <Button
+                type={excludeAbnormal ? 'primary' : 'default'}
+                onClick={() => setExcludeAbnormal(v => !v)}
+              >
+                排除异常请求
+              </Button>
+            </Tooltip>
           </Space>
+
+          {/* Row 4: Display setting buttons (instant effect) */}
+          <Space wrap size="middle" align="center">
+            <Text style={{ fontSize: 14, minWidth: 80 }}>
+              显示设置
+              <Tooltip title="即时生效，无需重新查询" mouseEnterDelay={0} color="rgba(0,0,0,0.78)" overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}>
+                <InfoCircleOutlined style={{ marginLeft: 4, color: '#8c8c8c', cursor: 'help' }} />
+              </Tooltip>：
+            </Text>
+            <Tooltip
+              title="将大数字以 K / M 等简写形式显示，便于阅读"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
+            >
+              <Button
+                type={humanFriendly ? 'primary' : 'default'}
+                icon={<NumberOutlined />}
+                onClick={() => setHumanFriendly(h => !h)}
+              >
+                简化数字显示
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="开启后：缓存读 Tokens 按配置的缓存价格单独计费，并从输入 Tokens 中扣除（适用 OpenAI 格式，避免双重计费）；关闭后：所有输入 Tokens 统一按输入价格计算。"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 360 }}
+            >
+              <Button
+                type={useCachePrice ? 'primary' : 'default'}
+                onClick={() => setUseCachePrice(v => !v)}
+              >
+                缓存读独立计费
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="每日明细页中显示每日小计和整体合计行"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
+            >
+              <Button
+                type={showDailySubtotals ? 'primary' : 'default'}
+                onClick={() => setShowDailySubtotals(v => !v)}
+                disabled={dailyOnlyTotals}
+              >
+                每日小计/合计
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="每日明细页中只显示每日合计，不显示每个模型的明细"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
+            >
+              <Button
+                type={dailyOnlyTotals ? 'primary' : 'default'}
+                onClick={() => setDailyOnlyTotals(v => !v)}
+              >
+                仅显示每日合计
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="根据价格配置计算并显示费用列"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
+            >
+              <Button
+                type={calcCost ? 'primary' : 'default'}
+                onClick={() => setCalcCost(v => !v)}
+              >
+                是否计算费用
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="在费用列中同时显示美金（USD）"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
+            >
+              <Button
+                type={showUSD ? 'primary' : 'default'}
+                onClick={() => setShowUSD(v => !v)}
+                disabled={!calcCost}
+              >
+                包含美金计算
+              </Button>
+            </Tooltip>
+          </Space>
+
+          {/* Row 5: Query button (separated) */}
+          <div style={{ marginTop: 4, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+            <Space size="middle" align="center">
+              <Button type="primary" size="large" icon={<ReloadOutlined />} loading={loading} onClick={query}>
+                查询
+              </Button>
+              <Button size="large" icon={<DownloadOutlined />} onClick={handleExport} disabled={!summary}>
+                导出 Excel
+              </Button>
+            </Space>
+          </div>
         </Space>
       </Card>
 
@@ -818,6 +920,32 @@ export default function Dashboard() {
                         )}
                       </Table.Summary.Row>
                     ) : null}
+                  />
+                ),
+              },
+              {
+                key: 'abnormal',
+                label: (
+                  <span>
+                    异常请求明细{abnormalLogs.length ? ` (${abnormalLogs.length})` : ''}
+                    <Tooltip
+                      title="判定条件：流式请求中首字响应时间（frt）< 0 的请求视为异常，不纳入正常统计"
+                      mouseEnterDelay={0}
+                      color="rgba(0,0,0,0.78)"
+                      overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 300 }}
+                    >
+                      <InfoCircleOutlined style={{ marginLeft: 6, color: '#faad14', cursor: 'help' }} />
+                    </Tooltip>
+                  </span>
+                ),
+                children: (
+                  <Table<AbnormalLog>
+                    dataSource={abnormalLogs}
+                    columns={abnormalColumns}
+                    rowKey={(_r, idx) => String(idx)}
+                    size="small"
+                    scroll={{ x: 'max-content' }}
+                    pagination={{ pageSize: 50, showSizeChanger: true, showTotal: t => `共 ${t} 条` }}
                   />
                 ),
               },

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { DailyCost, PriceConfig, SummaryResponse } from './types';
+import { AbnormalLog, DailyCost, PriceConfig, SummaryResponse } from './types';
 
 const BASE = '';
 
@@ -40,6 +40,11 @@ export async function fetchDaily(p: QueryParams): Promise<DailyCost[]> {
   return res.data.data ?? [];
 }
 
+export async function fetchAbnormal(p: QueryParams): Promise<AbnormalLog[]> {
+  const res = await axios.get(`${BASE}/api/stats/abnormal`, { params: buildParams(p) });
+  return res.data.data ?? [];
+}
+
 export async function fetchPrices(): Promise<PriceConfig> {
   const res = await axios.get(`${BASE}/api/prices`);
   return res.data;
@@ -52,4 +57,9 @@ export async function savePrices(cfg: PriceConfig): Promise<void> {
 export function buildExportUrl(p: QueryParams): string {
   const params = new URLSearchParams(buildParams(p));
   return `${BASE}/api/export?${params.toString()}`;
+}
+
+export function buildExportAbnormalUrl(p: QueryParams): string {
+  const params = new URLSearchParams(buildParams(p));
+  return `${BASE}/api/export/abnormal?${params.toString()}`;
 }

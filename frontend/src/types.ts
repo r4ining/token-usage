@@ -46,6 +46,19 @@ export interface SummaryResponse {
   by_model: ModelCost[];
 }
 
+export interface AbnormalLog {
+  token_name: string;
+  model_name: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_tokens: number;
+  total_tokens: number;
+  request_count: number;
+  quota: number;
+  created_at: string;
+  error_reason: string;
+}
+
 export interface PriceEntry {
   id: string;
   model_id: string;

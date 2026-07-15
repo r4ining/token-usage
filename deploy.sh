@@ -18,7 +18,7 @@ else
 fi
 
 echo "$VERSION" > "$VERSION_FILE"
-IMAGE_TAG="token-usage:${VERSION}"
+IMAGE_TAG="registry.sy.com/base/token-usage:${VERSION}"
 echo "=== Deploying $IMAGE_TAG ==="
 
 # Sync project files to remote (exclude build artifacts and local data)
@@ -39,7 +39,7 @@ echo "=== Building image on remote ==="
 ssh "$REMOTE" "cd $REMOTE_DIR && docker build -t $IMAGE_TAG ."
 
 # Update docker-compose.yml on remote with the new tag
-ssh "$REMOTE" "cd $REMOTE_DIR && sed -i 's|image: token-usage:.*|image: $IMAGE_TAG|' docker-compose.yml"
+ssh "$REMOTE" "cd $REMOTE_DIR && sed -i 's|image: registry.sy.com/base/token-usage:.*|image: $IMAGE_TAG|' docker-compose.yml"
 
 # Restart the service on remote
 echo "=== Restarting service ==="
@@ -47,9 +47,9 @@ ssh "$REMOTE" "cd $REMOTE_DIR && docker compose down && docker compose up -d"
 
 # Update local docker-compose.yml (macOS sed)
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  sed -i '' "s|image: token-usage:.*|image: $IMAGE_TAG|" docker-compose.yml
+  sed -i '' "s|image: registry.sy.com/base/token-usage:.*|image: $IMAGE_TAG|" docker-compose.yml
 else
-  sed -i "s|image: token-usage:.*|image: $IMAGE_TAG|" docker-compose.yml
+  sed -i "s|image: registry.sy.com/base/token-usage:.*|image: $IMAGE_TAG|" docker-compose.yml
 fi
 
 echo "=== Deployed $IMAGE_TAG successfully ==="
