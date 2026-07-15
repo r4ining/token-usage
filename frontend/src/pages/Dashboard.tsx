@@ -130,6 +130,7 @@ export default function Dashboard() {
   const [showDailySubtotals, setShowDailySubtotals] = useState(true);
   const [dailySortOrder, setDailySortOrder] = useState<SortOrder>('ascend');
   const [dailyOnlyTotals, setDailyOnlyTotals] = useState(false);
+  const [excludeAbnormal, setExcludeAbnormal] = useState(true);
 
   useEffect(() => {
     fetchTokenNames()
@@ -322,6 +323,7 @@ export default function Dashboard() {
 
   const buildQueryParams = useCallback((): QueryParams => {
     const p: QueryParams = { token_names: selectedTokens };
+    if (excludeAbnormal) p.exclude_abnormal = true;
     if (granularity !== 'custom') {
       p.granularity = granularity;
     } else if (customRange) {
@@ -329,7 +331,7 @@ export default function Dashboard() {
       p.end = customRange[1].unix();
     }
     return p;
-  }, [selectedTokens, granularity, customRange]);
+  }, [selectedTokens, granularity, customRange, excludeAbnormal]);
 
   const query = useCallback(async () => {
     setLoading(true);
@@ -665,6 +667,13 @@ export default function Dashboard() {
               title="是否在费用列中同时显示美金（USD）"
             >
               包含美金计算
+            </Button>
+            <Button
+              type={excludeAbnormal ? 'primary' : 'default'}
+              onClick={() => setExcludeAbnormal(v => !v)}
+              title="开启后：排除流式请求中 frt < 0 的异常请求，不纳入统计"
+            >
+              排除异常请求
             </Button>
           </Space>
         </Space>

@@ -35,10 +35,11 @@ func Init(cfg *config.Config) error {
 
 // QueryParams holds the filter parameters for stats queries.
 type QueryParams struct {
-	TokenNames []string
-	Start      int64
-	End        int64
-	TableName  string
+	TokenNames      []string
+	Start           int64
+	End             int64
+	TableName       string
+	ExcludeAbnormal bool
 }
 
 // GetAllTokenNames returns the distinct name values in the tokens table.
@@ -166,6 +167,9 @@ func buildBaseQuery(p QueryParams) *gorm.DB {
 	}
 	if p.End > 0 {
 		tx = tx.Where("created_at < ?", p.End)
+	}
+	if p.ExcludeAbnormal {
+		tx = tx.Where("NOT (is_stream = 1 AND CAST(JSON_UNQUOTE(JSON_EXTRACT(other, '$.frt')) AS SIGNED) < 0)")
 	}
 	return tx
 }

@@ -19,17 +19,33 @@ func defaultConfig() *models.PriceConfig {
 				ID:          "glm-5.1",
 				ModelID:     "glm-5.1",
 				Aliases:     []string{},
-				InputPrice:  8.0000 / defaultUSDToCNY,  // CNY to USD
+				InputPrice:  8.0000 / defaultUSDToCNY, // CNY to USD
 				OutputPrice: 28.0000 / defaultUSDToCNY, // CNY to USD
-				CachePrice:  0,
+				CachePrice:  2.0000 / defaultUSDToCNY, // CNY to USD
+			},
+			{
+				ID:          "glm-5.2",
+				ModelID:     "glm-5.2",
+				Aliases:     []string{},
+				InputPrice:  8.0000 / defaultUSDToCNY, // CNY to USD
+				OutputPrice: 28.0000 / defaultUSDToCNY, // CNY to USD
+				CachePrice:  2.0000 / defaultUSDToCNY, // CNY to USD
 			},
 			{
 				ID:          "minimax-m2.7",
 				ModelID:     "minimax-m2.7",
 				Aliases:     []string{},
-				InputPrice:  2.1970 / defaultUSDToCNY, // CNY to USD
-				OutputPrice: 8.7820 / defaultUSDToCNY, // CNY to USD
-				CachePrice:  0,
+				InputPrice:  2.1000 / defaultUSDToCNY, // CNY to USD
+				OutputPrice: 8.4000 / defaultUSDToCNY, // CNY to USD
+				CachePrice:  0.4200 / defaultUSDToCNY, // CNY to USD
+			},
+			{
+				ID:          "minimax-m3",
+				ModelID:     "minimax-m3",
+				Aliases:     []string{},
+				InputPrice:  2.1000 / defaultUSDToCNY, // CNY to USD
+				OutputPrice: 8.4000 / defaultUSDToCNY, // CNY to USD
+				CachePrice:  0.4200 / defaultUSDToCNY, // CNY to USD
 			},
 		},
 		USDToCNY: defaultUSDToCNY,

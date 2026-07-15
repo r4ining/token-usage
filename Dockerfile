@@ -20,7 +20,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/token-usage .
 
 # Stage 3: Final minimal image
 FROM alpine:3.19
-RUN apk add --no-cache tzdata ca-certificates
+RUN sed -i 's#dl-cdn.alpinelinux.org#repo.huaweicloud.com#g' /etc/apk/repositories && \
+    apk add --no-cache tzdata ca-certificates
 ENV TZ=Asia/Shanghai
 WORKDIR /app
 COPY --from=backend /app/token-usage ./token-usage

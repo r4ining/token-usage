@@ -1,0 +1,31 @@
+# Stage 1: Build frontend (arch-independent, run on builder's native platform)
+FROM --platform=$BUILDPLATFORM swr.cn-east-3.myhuaweicloud.com/r4in/node:20-alpine AS frontend
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN --network=host --mount=type=cache,target=/root/.npm \
+    npm config set registry https://repo.huaweicloud.com/repository/npm/ && npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Build backend (cross-compile, run on builder's native platform)
+FROM --platform=$BUILDPLATFORM swr.cn-east-3.myhuaweicloud.com/r4in/golang:1.22-alpine AS backend
+ARG TARGETARCH
+WORKDIR /app/backend
+ENV GOPROXY=https://repo.huaweicloud.com/repository/goproxy,direct
+COPY backend/go.mod backend/go.sum ./
+COPY backend/ ./
+COPY --from=frontend /app/backend/static/dist ./static/dist
+RUN --network=host --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /app/token-usage .
+
+# Stage 3: Final minimal image
+FROM swr.cn-east-3.myhuaweicloud.com/r4in/alpine:3.19
+RUN sed -i 's#dl-cdn.alpinelinux.org#repo.huaweicloud.com#g' /etc/apk/repositories && \
+    apk add --no-cache tzdata ca-certificates
+ENV TZ=Asia/Shanghai
+WORKDIR /app
+COPY --from=backend /app/token-usage ./token-usage
+VOLUME ["/data"]
+EXPOSE 8080
+ENTRYPOINT ["/app/token-usage"]

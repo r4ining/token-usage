@@ -72,11 +72,14 @@ func parseQueryParams(c *gin.Context, tableName string) db.QueryParams {
 		end = now.Unix()
 	}
 
+	excludeAbnormal := c.Query("exclude_abnormal") == "1"
+
 	return db.QueryParams{
-		TokenNames: tokenNames,
-		Start:      start,
-		End:        end,
-		TableName:  tableName,
+		TokenNames:      tokenNames,
+		Start:           start,
+		End:             end,
+		TableName:       tableName,
+		ExcludeAbnormal: excludeAbnormal,
 	}
 }
 

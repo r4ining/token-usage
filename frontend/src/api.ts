@@ -10,6 +10,7 @@ export interface QueryParams {
   granularity?: string;
   human_friendly?: boolean;
   use_cache_price?: boolean;
+  exclude_abnormal?: boolean;
 }
 
 function buildParams(p: QueryParams): Record<string, string> {
@@ -20,6 +21,7 @@ function buildParams(p: QueryParams): Record<string, string> {
   if (p.granularity) params.granularity = p.granularity;
   if (p.human_friendly) params.human_friendly = '1';
   if (p.use_cache_price) params.use_cache_price = '1';
+  if (p.exclude_abnormal) params.exclude_abnormal = '1';
   return params;
 }
 
