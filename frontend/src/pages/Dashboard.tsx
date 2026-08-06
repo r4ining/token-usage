@@ -29,16 +29,40 @@ const GRANULARITY_OPTIONS: { label: string; value: Granularity }[] = [
   { label: '自定义', value: 'custom' },
 ];
 
-function fmtNum(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
-  return String(n);
+function addThousandSep(s: string): string {
+  const parts = s.split('.');
+  const sign = parts[0].startsWith('-') ? '-' : '';
+  parts[0] = sign ? parts[0].slice(1) : parts[0];
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return sign + parts.join('.');
 }
 
-function fmtHuman(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(3) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(3) + 'K';
-  return String(n);
+function fmtNum(n: number, sep = false): string {
+  if (n >= 1_000_000) {
+    const val = n / 1_000_000;
+    const s = Number.isInteger(val) ? String(val) : val.toFixed(2);
+    return (sep ? addThousandSep(s) : s) + 'M';
+  }
+  if (n >= 1_000) {
+    const val = n / 1_000;
+    const s = Number.isInteger(val) ? String(val) : val.toFixed(1);
+    return (sep ? addThousandSep(s) : s) + 'K';
+  }
+  return sep ? n.toLocaleString() : String(n);
+}
+
+function fmtHuman(n: number, sep = false): string {
+  if (n >= 1_000_000) {
+    const val = n / 1_000_000;
+    const s = Number.isInteger(val) ? String(val) : val.toFixed(3);
+    return (sep ? addThousandSep(s) : s) + 'M';
+  }
+  if (n >= 1_000) {
+    const val = n / 1_000;
+    const s = Number.isInteger(val) ? String(val) : val.toFixed(3);
+    return (sep ? addThousandSep(s) : s) + 'K';
+  }
+  return sep ? n.toLocaleString() : String(n);
 }
 
 // ---------- cost helpers (mirror backend pricing.FindEntry / pricing.CalcCost) ----------
@@ -81,12 +105,12 @@ function calcCostUSD(
 
 // ---------- end cost helpers ----------
 
-function fmtUSD(n: number): string {
-  return '$' + n.toFixed(4);
+function fmtUSD(n: number, sep = false): string {
+  return '$' + (sep ? addThousandSep(n.toFixed(4)) : n.toFixed(4));
 }
 
-function fmtCNY(n: number): string {
-  return '¥' + n.toFixed(4);
+function fmtCNY(n: number, sep = false): string {
+  return '¥' + (sep ? addThousandSep(n.toFixed(4)) : n.toFixed(4));
 }
 
 function computeTimeRange(gran: Granularity, custom: [Dayjs, Dayjs] | null): [Dayjs, Dayjs] | null {
@@ -123,6 +147,7 @@ export default function Dashboard() {
   const [abnormalLogs, setAbnormalLogs] = useState<AbnormalLog[]>([]);
   const [activeTab, setActiveTab] = useState('model');
   const [humanFriendly, setHumanFriendly] = useState(true);
+  const [thousandSep, setThousandSep] = useState(true);
   const [useCachePrice, setUseCachePrice] = useState(true);
   const [calcCost, setCalcCost] = useState(true);
   const [showUSD, setShowUSD] = useState(false);
@@ -163,8 +188,11 @@ export default function Dashboard() {
   const timeRange = useMemo(() => computeTimeRange(granularity, customRange), [granularity, customRange]);
   const timeLabel = useMemo(() => timeRangeLabel(timeRange), [timeRange]);
 
-  const fmtTableToken = useCallback((n: number) => humanFriendly ? fmtHuman(n) : n.toLocaleString(), [humanFriendly]);
-  const fmtSummaryToken = useCallback((n: number) => humanFriendly ? fmtHuman(n) : fmtNum(n), [humanFriendly]);
+  const fmtTableToken = useCallback((n: number) => humanFriendly ? fmtHuman(n, thousandSep) : (thousandSep ? n.toLocaleString() : String(n)), [humanFriendly, thousandSep]);
+  const fmtSummaryToken = useCallback((n: number) => humanFriendly ? fmtHuman(n, thousandSep) : fmtNum(n, thousandSep), [humanFriendly, thousandSep]);
+  const fmtCount = useCallback((n: number) => thousandSep ? n.toLocaleString() : String(n), [thousandSep]);
+  const fmtUSDLocal = useCallback((n: number) => fmtUSD(n, thousandSep), [thousandSep]);
+  const fmtCNYLocal = useCallback((n: number) => fmtCNY(n, thousandSep), [thousandSep]);
 
   // Group byModel data by token_name with subtotals
   const groupedModelData = useMemo(() => {
@@ -360,7 +388,8 @@ export default function Dashboard() {
   }, [buildQueryParams]);
 
   const handleExport = async () => {
-    const fmtTok = (n: number) => humanFriendly ? fmtHuman(n) : n;
+    const fmtTok = (n: number): string | number => humanFriendly ? fmtHuman(n, thousandSep) : n;
+    const fmtCost = (n: number): string => n > 0 ? (thousandSep ? addThousandSep((Math.round(n * 10000) / 10000).toFixed(4)) : (Math.round(n * 10000) / 10000).toFixed(4)) : '';
 
     const borderStyle: Partial<ExcelJS.Border> = { style: 'thin', color: { argb: 'FF000000' } };
     const allBorders: Partial<ExcelJS.Borders> = {
@@ -391,11 +420,15 @@ export default function Dashboard() {
           }
         }
       }
-      // Re-apply border to merged cells (mergeCells resets style)
+      // Re-apply border to merged cells (mergeCells resets style) and apply
+      // thousand-separator number format to numeric data cells when enabled.
       for (let r = 1; r <= totalRows; r++) {
         for (let c = 1; c <= totalCols; c++) {
           const cell = ws.getCell(r, c);
           cell.border = allBorders;
+          if (thousandSep && r >= dataStartRow && typeof cell.value === 'number') {
+            cell.numFmt = '#,##0';
+          }
         }
       }
       void dataStartRow;
@@ -417,8 +450,8 @@ export default function Dashboard() {
 
       const buildSummaryRow = (tokenName: string, modelName: string, rc: number, pt: number, ct: number, cpt: number, tt: number, usd: number, cny: number) => {
         const cells: (string | number)[] = [tokenName, modelName, rc, fmtTok(pt), fmtTok(ct), fmtTok(cpt), fmtTok(tt)];
-        if (calcCost && showUSD) cells.push(usd > 0 ? (Math.round(usd * 10000) / 10000).toFixed(4) : '');
-        if (calcCost) cells.push(cny > 0 ? (Math.round(cny * 10000) / 10000).toFixed(4) : '');
+        if (calcCost && showUSD) cells.push(fmtCost(usd));
+        if (calcCost) cells.push(fmtCost(cny));
         return cells;
       };
 
@@ -476,8 +509,8 @@ export default function Dashboard() {
 
       const buildDailyRow = (date: string, tokenName: string, modelName: string, rc: number, pt: number, ct: number, cpt: number, tt: number, usd: number, cny: number) => {
         const cells: (string | number)[] = [date, tokenName, modelName, rc, fmtTok(pt), fmtTok(ct), fmtTok(cpt), fmtTok(tt)];
-        if (calcCost && showUSD) cells.push(usd > 0 ? (Math.round(usd * 10000) / 10000).toFixed(4) : '');
-        if (calcCost) cells.push(cny > 0 ? (Math.round(cny * 10000) / 10000).toFixed(4) : '');
+        if (calcCost && showUSD) cells.push(fmtCost(usd));
+        if (calcCost) cells.push(fmtCost(cny));
         return cells;
       };
 
@@ -534,7 +567,7 @@ export default function Dashboard() {
     { title: '请求次数', dataIndex: 'request_count', key: 'request_count', align: 'right',
       sorter: () => 0,
       sortOrder: modelSortField === 'request_count' ? modelSortOrder : null,
-      render: (v: number) => v.toLocaleString() },
+      render: (v: number) => fmtCount(v) },
     { title: '输入 Tokens', dataIndex: 'prompt_tokens', key: 'prompt_tokens', align: 'right',
       sorter: () => 0,
       sortOrder: modelSortField === 'prompt_tokens' ? modelSortOrder : null,
@@ -554,12 +587,12 @@ export default function Dashboard() {
     ...(calcCost && showUSD ? [{ title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right' as const,
       sorter: () => 0,
       sortOrder: modelSortField === 'cost_usd' ? modelSortOrder : null,
-      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
+      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSDLocal(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
     ...(calcCost ? [{ title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
       sorter: () => 0,
       sortOrder: modelSortField === 'cost_cny' ? modelSortOrder : null,
-      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
-  ] as ColumnsType<ModelRow>), [fmtTableToken, modelSortField, modelSortOrder, calcCost, showUSD]);
+      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNYLocal(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
+  ] as ColumnsType<ModelRow>), [fmtTableToken, fmtCount, fmtUSDLocal, fmtCNYLocal, modelSortField, modelSortOrder, calcCost, showUSD]);
 
   const dailyColumns: ColumnsType<DailyRow> = useMemo(() => ([
     { title: (
@@ -578,7 +611,7 @@ export default function Dashboard() {
     { title: dailyOnlyTotals ? '每日合计' : '模型', dataIndex: 'model_name', key: 'model_name', width: 220,
       render: (v: string, record) => (record.isDateSubtotal || dailyOnlyTotals) ? <strong>{v}</strong> : <Text code>{v}</Text> },
     { title: '请求次数', dataIndex: 'request_count', key: 'request_count', align: 'right',
-      render: (v: number) => v.toLocaleString() },
+      render: (v: number) => fmtCount(v) },
     { title: '输入 Tokens', dataIndex: 'prompt_tokens', key: 'prompt_tokens', align: 'right',
       render: (v: number) => fmtTableToken(v) },
     { title: '缓存读 Tokens', dataIndex: 'cache_tokens', key: 'cache_tokens', align: 'right',
@@ -588,10 +621,10 @@ export default function Dashboard() {
     { title: '总 Tokens', dataIndex: 'total_tokens', key: 'total_tokens', align: 'right',
       render: (v: number) => <strong>{fmtTableToken(v)}</strong> },
     ...(calcCost && showUSD ? [{ title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right' as const,
-      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSD(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
+      render: (v: number) => v > 0 ? <Tag color="green">{fmtUSDLocal(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
     ...(calcCost ? [{ title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
-      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNY(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
-  ] as ColumnsType<DailyRow>), [fmtTableToken, dailySortOrder, calcCost, showUSD, dailyOnlyTotals]);
+      render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNYLocal(v)}</Tag> : <Text type="secondary">-</Text> }] : []),
+  ] as ColumnsType<DailyRow>), [fmtTableToken, fmtCount, fmtUSDLocal, fmtCNYLocal, dailySortOrder, calcCost, showUSD, dailyOnlyTotals]);
 
   const abnormalColumns: ColumnsType<AbnormalLog> = useMemo(() => ([
     { title: '时间', dataIndex: 'created_at', key: 'created_at', width: 170 },
@@ -699,6 +732,19 @@ export default function Dashboard() {
               </Button>
             </Tooltip>
             <Tooltip
+              title="对所有数值（含 K / M 简写数字）使用千分位分隔符显示，导出的 Excel 与页面格式保持一致"
+              mouseEnterDelay={0}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}
+            >
+              <Button
+                type={thousandSep ? 'primary' : 'default'}
+                onClick={() => setThousandSep(v => !v)}
+              >
+                千分位分隔
+              </Button>
+            </Tooltip>
+            <Tooltip
               title="开启后：缓存读 Tokens 按配置的缓存价格单独计费，并从输入 Tokens 中扣除（适用 OpenAI 格式，避免双重计费）；关闭后：所有输入 Tokens 统一按输入价格计算。"
               mouseEnterDelay={0}
               color="rgba(0,0,0,0.78)"
@@ -786,7 +832,7 @@ export default function Dashboard() {
         <Row gutter={16}>
           <Col span={4}>
             <Card size="small">
-              <Statistic title="总请求数" value={summary.total_requests} formatter={v => Number(v).toLocaleString()} />
+              <Statistic title="总请求数" value={summary.total_requests} formatter={v => fmtCount(Number(v))} />
             </Card>
           </Col>
           <Col span={5}>
@@ -809,7 +855,7 @@ export default function Dashboard() {
               <Card size="small">
                 <Statistic
                   title={showUSD ? '总费用 (USD / CNY)' : '总费用 (CNY)'}
-                  value={calcCost ? (showUSD ? (totalUSD > 0 ? `${fmtUSD(totalUSD)} / ${fmtCNY(totalCNY)}` : '未配置价格') : (totalCNY > 0 ? fmtCNY(totalCNY) : '未配置价格')) : '-'}
+                  value={calcCost ? (showUSD ? (totalUSD > 0 ? `${fmtUSDLocal(totalUSD)} / ${fmtCNYLocal(totalCNY)}` : '未配置价格') : (totalCNY > 0 ? fmtCNYLocal(totalCNY) : '未配置价格')) : '-'}
                   valueStyle={{ fontSize: 16 }}
                 />
               </Card>
@@ -847,7 +893,7 @@ export default function Dashboard() {
                         <Table.Summary.Cell index={0}><strong>合计</strong></Table.Summary.Cell>
                         <Table.Summary.Cell index={1} />
                         <Table.Summary.Cell index={2} align="right">
-                          {summary.total_requests.toLocaleString()}
+                          {fmtCount(summary.total_requests)}
                         </Table.Summary.Cell>
                         <Table.Summary.Cell index={3} align="right">
                           {fmtTableToken(summary.total_prompt_tokens)}
@@ -863,12 +909,12 @@ export default function Dashboard() {
                         </Table.Summary.Cell>
                         {calcCost && showUSD && (
                           <Table.Summary.Cell index={7} align="right">
-                            {totalUSD > 0 && <Tag color="green">{fmtUSD(totalUSD)}</Tag>}
+                            {totalUSD > 0 && <Tag color="green">{fmtUSDLocal(totalUSD)}</Tag>}
                           </Table.Summary.Cell>
                         )}
                         {calcCost && (
                           <Table.Summary.Cell index={8} align="right">
-                            {totalCNY > 0 && <Tag color="blue">{fmtCNY(totalCNY)}</Tag>}
+                            {totalCNY > 0 && <Tag color="blue">{fmtCNYLocal(totalCNY)}</Tag>}
                           </Table.Summary.Cell>
                         )}
                       </Table.Summary.Row>
@@ -894,7 +940,7 @@ export default function Dashboard() {
                         {!dailyOnlyTotals && <Table.Summary.Cell index={1} />}
                         <Table.Summary.Cell index={2} />
                         <Table.Summary.Cell index={3} align="right">
-                          {groupedDailyData.grandTotal.request_count.toLocaleString()}
+                          {fmtCount(groupedDailyData.grandTotal.request_count)}
                         </Table.Summary.Cell>
                         <Table.Summary.Cell index={4} align="right">
                           {fmtTableToken(groupedDailyData.grandTotal.prompt_tokens)}
@@ -910,12 +956,12 @@ export default function Dashboard() {
                         </Table.Summary.Cell>
                         {calcCost && showUSD && (
                           <Table.Summary.Cell index={8} align="right">
-                            {groupedDailyData.grandTotal.cost_usd > 0 && <Tag color="green">{fmtUSD(groupedDailyData.grandTotal.cost_usd)}</Tag>}
+                            {groupedDailyData.grandTotal.cost_usd > 0 && <Tag color="green">{fmtUSDLocal(groupedDailyData.grandTotal.cost_usd)}</Tag>}
                           </Table.Summary.Cell>
                         )}
                         {calcCost && (
                           <Table.Summary.Cell index={9} align="right">
-                            {groupedDailyData.grandTotal.cost_cny > 0 && <Tag color="blue">{fmtCNY(groupedDailyData.grandTotal.cost_cny)}</Tag>}
+                            {groupedDailyData.grandTotal.cost_cny > 0 && <Tag color="blue">{fmtCNYLocal(groupedDailyData.grandTotal.cost_cny)}</Tag>}
                           </Table.Summary.Cell>
                         )}
                       </Table.Summary.Row>
