@@ -228,8 +228,8 @@ export default function Dashboard() {
         subtotal.total_tokens += item.total_tokens;
         subtotal.quota += item.quota;
         subtotal.request_count += item.request_count;
-        subtotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
-        subtotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+        subtotal.cost_usd += item.cost_usd;
+        subtotal.cost_cny += item.cost_cny;
       }
       subtotalMap.set(tokenName, subtotal);
     }
@@ -282,8 +282,8 @@ export default function Dashboard() {
       grandTotal.total_tokens += item.total_tokens;
       grandTotal.quota += item.quota;
       grandTotal.request_count += item.request_count;
-      grandTotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
-      grandTotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+      grandTotal.cost_usd += item.cost_usd;
+      grandTotal.cost_cny += item.cost_cny;
     }
 
     return { rows, subtotals, grandTotal };
@@ -324,16 +324,16 @@ export default function Dashboard() {
         subtotal.total_tokens += item.total_tokens;
         subtotal.quota += item.quota;
         subtotal.request_count += item.request_count;
-        subtotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
-        subtotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+        subtotal.cost_usd += item.cost_usd;
+        subtotal.cost_cny += item.cost_cny;
         grandTotal.prompt_tokens += item.prompt_tokens;
         grandTotal.completion_tokens += item.completion_tokens;
         grandTotal.cache_tokens += item.cache_tokens;
         grandTotal.total_tokens += item.total_tokens;
         grandTotal.quota += item.quota;
         grandTotal.request_count += item.request_count;
-        grandTotal.cost_usd += Math.round(item.cost_usd * 10000) / 10000;
-        grandTotal.cost_cny += Math.round(item.cost_cny * 10000) / 10000;
+        grandTotal.cost_usd += item.cost_usd;
+        grandTotal.cost_cny += item.cost_cny;
       }
       if (dailyOnlyTotals) {
         rows.push({ ...subtotal, model_name: '每日合计', isDateSubtotal: false, dateRowSpan: 1, isDateFirst: true });
@@ -554,9 +554,11 @@ export default function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
-  // Total cost — sum rounded per-model values directly (not via subtotals)
-  const totalUSD = useMemo(() => byModel.reduce((s, r) => s + Math.round(r.cost_usd * 10000) / 10000, 0), [byModel]);
-  const totalCNY = useMemo(() => byModel.reduce((s, r) => s + Math.round(r.cost_cny * 10000) / 10000, 0), [byModel]);
+  // Total cost — sum raw (unrounded) per-model values directly (not via subtotals).
+  // Rounding is applied only once, at display time, so this matches the daily-detail
+  // grand total exactly regardless of grouping granularity.
+  const totalUSD = useMemo(() => byModel.reduce((s, r) => s + r.cost_usd, 0), [byModel]);
+  const totalCNY = useMemo(() => byModel.reduce((s, r) => s + r.cost_cny, 0), [byModel]);
 
   const modelColumns: ColumnsType<ModelRow> = useMemo(() => ([
     { title: 'Key 名称', dataIndex: 'token_name', key: 'token_name', fixed: 'left', width: 160,

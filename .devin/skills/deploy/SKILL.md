@@ -1,5 +1,10 @@
 ---
+name: deploy
 description: Build and deploy token-usage Docker image to root@10.10.249.137
+allowed-tools:
+  - read
+  - exec
+  - edit
 ---
 
 # Deploy Workflow
