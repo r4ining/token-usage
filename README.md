@@ -62,6 +62,7 @@ docker compose up -d --build
 | `DB_PASSWORD` | _(必填)_ | 数据库密码 |
 | `DB_NAME` | `new-api` | 数据库名 |
 | `DB_TABLE_NAME` | `logs` | 日志表名 |
+| `LOG_SQL_DSN` | _(空)_ | 可选，`logs` 表的独立数据库 DSN（如 PostgreSQL）。设置后日志表从该库读取，其他表（如 `tokens`）仍走 MySQL |
 | `PORT` | `8080` | 服务端口 |
 | `DATA_DIR` | `/data` | 价格配置持久化目录 |
 | `TZ` | `Asia/Shanghai` | 时区 |
@@ -124,4 +125,4 @@ npm run dev
 
 - 本服务只需要对 new-api 数据库的 **只读权限**
 - 价格配置持久化在 `./data/prices.json`（容器内挂载为 `/data`）
-- 若 new-api 使用单独的 `LOG_SQL_DSN` 日志库，请将 `DB_*` 环境变量指向该数据库
+- 若 new-api 将 `logs` 表单独存放在 PostgreSQL（通过 `LOG_SQL_DSN` 配置），设置该变量即可，`DB_*` 仍指向存放 `tokens` 等其他表的 MySQL 库

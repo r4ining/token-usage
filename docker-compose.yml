@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   token-usage:
-    image: registry.sy.com/base/token-usage:v0.3.1
+    image: registry.sy.com/base/token-usage:v0.3.2
     container_name: token-usage
     restart: unless-stopped
     ports:
@@ -14,6 +14,7 @@ services:
       - DB_PASSWORD=${DB_PASSWORD:-your_password_here}
       - DB_NAME=${DB_NAME:-new-api}
       - DB_TABLE_NAME=${DB_TABLE_NAME:-logs}
+      - LOG_SQL_DSN=${LOG_SQL_DSN:-}
       - PORT=${PORT:-8080}
       - DATA_DIR=${DATA_DIR:-/data}
       - TZ=${TZ:-Asia/Shanghai}

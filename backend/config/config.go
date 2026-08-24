@@ -13,6 +13,10 @@ type Config struct {
 	DBTable    string
 	Port       string
 	DataDir    string
+	// LogSQLDSN, when set, points to a standalone database (e.g. PostgreSQL)
+	// that stores the `logs` table. When empty, the logs table is read from
+	// the same MySQL database configured above.
+	LogSQLDSN string
 }
 
 func Load() *Config {
@@ -25,6 +29,7 @@ func Load() *Config {
 		DBTable:    getEnv("DB_TABLE_NAME", "logs"),
 		Port:       getEnv("PORT", "8080"),
 		DataDir:    getEnv("DATA_DIR", "/data"),
+		LogSQLDSN:  getEnv("LOG_SQL_DSN", ""),
 	}
 }
 

@@ -8,11 +8,21 @@ import (
 	"github.com/wangshihong/token-usage/config"
 	"github.com/wangshihong/token-usage/models"
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
+
+// LogDB is the connection used to read the `logs` table. It points to the
+// standalone PostgreSQL database when LOG_SQL_DSN is configured, otherwise it
+// falls back to the same MySQL connection as DB.
+var LogDB *gorm.DB
+
+// logDialect records the SQL dialect used by LogDB ("mysql" or "postgres"),
+// so dialect-specific SQL fragments can be generated.
+var logDialect string
 
 func Init(cfg *config.Config) error {
 	var err error
@@ -30,6 +40,28 @@ func Init(cfg *config.Config) error {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetMaxOpenConns(50)
 	sqlDB.SetConnMaxLifetime(time.Minute * 5)
+
+	// logs table: use a standalone PostgreSQL connection when LOG_SQL_DSN is
+	// configured, otherwise reuse the MySQL connection.
+	if cfg.LogSQLDSN != "" {
+		LogDB, err = gorm.Open(postgres.Open(cfg.LogSQLDSN), &gorm.Config{
+			Logger: logger.Default.LogMode(logger.Warn),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to connect to log database: %w", err)
+		}
+		logSQLDB, err := LogDB.DB()
+		if err != nil {
+			return err
+		}
+		logSQLDB.SetMaxIdleConns(10)
+		logSQLDB.SetMaxOpenConns(50)
+		logSQLDB.SetConnMaxLifetime(time.Minute * 5)
+		logDialect = "postgres"
+	} else {
+		LogDB = DB
+		logDialect = "mysql"
+	}
 	return nil
 }
 
@@ -42,7 +74,54 @@ type QueryParams struct {
 	ExcludeAbnormal bool
 }
 
+// --- dialect helpers ---
+//
+// The logs table may live in MySQL or PostgreSQL. The following helpers
+// translate the few SQL fragments that differ between the two dialects.
+
+// dateFromUnixtime returns an expression yielding the calendar date (YYYY-MM-DD)
+// for a unix-timestamp column.
+func dateFromUnixtime(col string) string {
+	if logDialect == "postgres" {
+		return "DATE(to_timestamp(" + col + ")) AS date"
+	}
+	return "DATE(FROM_UNIXTIME(" + col + ")) AS date"
+}
+
+// dateTimeFromUnixtime returns an expression yielding a formatted timestamp
+// string "YYYY-MM-DD HH:MM:SS" for a unix-timestamp column.
+func dateTimeFromUnixtime(col string) string {
+	if logDialect == "postgres" {
+		return "to_char(to_timestamp(" + col + "), 'YYYY-MM-DD HH24:MI:SS') AS created_at_str"
+	}
+	return "DATE_FORMAT(FROM_UNIXTIME(" + col + "), '%Y-%m-%d %H:%i:%s') AS created_at_str"
+}
+
+// jsonExtractText returns the text value at the given JSON path of a column.
+// `path` uses MySQL JSON path syntax (e.g. "$.stream_status"); it is converted
+// to the equivalent PostgreSQL `->>` accessor.
+func jsonExtractText(col, path string) string {
+	if logDialect == "postgres" {
+		// path looks like "$.a.b" -> convert to "'a','b' ..." for #>> operator,
+		// or simply the last key for ->> when single-level.
+		key := strings.TrimPrefix(path, "$.")
+		// only support single-level keys as used in this codebase
+		return col + "::json->>" + "'" + key + "'"
+	}
+	return "JSON_EXTRACT(" + col + ", '" + path + "')"
+}
+
+// isStreamTrue returns the SQL condition matching a streaming request.
+// PostgreSQL stores is_stream as a boolean; MySQL stores it as tinyint(1).
+func isStreamTrue() string {
+	if logDialect == "postgres" {
+		return "is_stream = true"
+	}
+	return "is_stream = 1"
+}
+
 // GetAllTokenNames returns the distinct name values in the tokens table.
+// The tokens table always lives in the primary MySQL database.
 func GetAllTokenNames(tableName string) ([]string, error) {
 	var names []string
 	err := DB.Table("tokens").
@@ -117,7 +196,7 @@ func GetDailyStats(p QueryParams) ([]models.DailyStat, error) {
 
 	var rows []row
 	err := tx.Select(
-		"DATE(FROM_UNIXTIME(created_at)) AS date, " +
+		dateFromUnixtime("created_at") + ", " +
 			"token_name, " +
 			"model_name, " +
 			"SUM(prompt_tokens) AS prompt_tokens, " +
@@ -173,12 +252,14 @@ func applyCommonFilters(tx *gorm.DB, p QueryParams) *gorm.DB {
 
 // abnormalCondition is the SQL condition identifying an abnormal request:
 // a streaming request whose first-response-time (frt) is negative.
-const abnormalCondition = "is_stream = 1 AND frt < 0"
+func abnormalCondition() string {
+	return isStreamTrue() + " AND frt < 0"
+}
 
 func buildBaseQuery(p QueryParams) *gorm.DB {
-	tx := applyCommonFilters(DB.Table(p.TableName).Where("type = 2"), p)
+	tx := applyCommonFilters(LogDB.Table(p.TableName).Where("type = 2"), p)
 	if p.ExcludeAbnormal {
-		tx = tx.Where("NOT (" + abnormalCondition + ")")
+		tx = tx.Where("NOT (" + abnormalCondition() + ")")
 	}
 	return tx
 }
@@ -186,8 +267,8 @@ func buildBaseQuery(p QueryParams) *gorm.DB {
 // GetAbnormalLogs returns individual abnormal request records (streaming
 // requests with frt < 0) matching the given filters.
 func GetAbnormalLogs(p QueryParams) ([]models.AbnormalLog, error) {
-	tx := applyCommonFilters(DB.Table(p.TableName).Where("type = 2"), p).
-		Where(abnormalCondition)
+	tx := applyCommonFilters(LogDB.Table(p.TableName).Where("type = 2"), p).
+		Where(abnormalCondition())
 
 	type row struct {
 		TokenName        string `gorm:"column:token_name"`
@@ -208,8 +289,8 @@ func GetAbnormalLogs(p QueryParams) ([]models.AbnormalLog, error) {
 			"completion_tokens, " +
 			"cache_tokens, " +
 			"quota, " +
-			"DATE_FORMAT(FROM_UNIXTIME(created_at), '%Y-%m-%d %H:%i:%s') AS created_at_str, " +
-			"IFNULL(JSON_EXTRACT(other, '$.stream_status'), '') AS error_reason",
+			dateTimeFromUnixtime("created_at") + ", " +
+			"COALESCE(" + jsonExtractText("other", "$.stream_status") + ", '') AS error_reason",
 	).Order("created_at DESC").Scan(&rows).Error
 	if err != nil {
 		return nil, err
