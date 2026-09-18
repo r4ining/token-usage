@@ -59,6 +59,27 @@ export interface AbnormalLog {
   error_reason: string;
 }
 
+export interface RequestLog {
+  token_name: string;
+  model_name: string;
+  created_at: string;
+  use_time: number;
+  is_stream: boolean;
+  frt: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cache_tokens: number;
+  total_tokens: number;
+  status_code: number;
+}
+
+export interface RequestLogsResponse {
+  data: RequestLog[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface PriceEntry {
   id: string;
   model_id: string;

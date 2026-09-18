@@ -2,6 +2,8 @@ package db
 
 import (
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +26,24 @@ var LogDB *gorm.DB
 // so dialect-specific SQL fragments can be generated.
 var logDialect string
 
+// withPGTimeZone appends a session TimeZone setting to a PostgreSQL DSN so
+// that timestamp rendering (to_timestamp/to_char/DATE) matches the
+// application's Asia/Shanghai convention, mirroring the MySQL DSN's
+// time_zone='+08:00'. Without it the server's default timezone (often UTC)
+// would be used, shifting displayed times and daily grouping by 8 hours.
+func withPGTimeZone(dsn string) string {
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" {
+		q := u.Query()
+		if q.Get("TimeZone") == "" {
+			q.Set("TimeZone", "Asia/Shanghai")
+			u.RawQuery = q.Encode()
+			return u.String()
+		}
+		return dsn
+	}
+	return dsn + " TimeZone=Asia/Shanghai"
+}
+
 func Init(cfg *config.Config) error {
 	var err error
 	DB, err = gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
@@ -44,7 +64,7 @@ func Init(cfg *config.Config) error {
 	// logs table: use a standalone PostgreSQL connection when LOG_SQL_DSN is
 	// configured, otherwise reuse the MySQL connection.
 	if cfg.LogSQLDSN != "" {
-		LogDB, err = gorm.Open(postgres.Open(cfg.LogSQLDSN), &gorm.Config{
+		LogDB, err = gorm.Open(postgres.Open(withPGTimeZone(cfg.LogSQLDSN)), &gorm.Config{
 			Logger: logger.Default.LogMode(logger.Warn),
 		})
 		if err != nil {
@@ -68,6 +88,7 @@ func Init(cfg *config.Config) error {
 // QueryParams holds the filter parameters for stats queries.
 type QueryParams struct {
 	TokenNames      []string
+	ModelNames      []string
 	Start           int64
 	End             int64
 	TableName       string
@@ -130,6 +151,34 @@ func GetAllTokenNames(tableName string) ([]string, error) {
 		Order("name").
 		Pluck("name", &names).Error
 	return names, err
+}
+
+// GetAllModelNames returns the distinct model names configured in the
+// channels table (the `models` column holds a comma-separated list per
+// channel). The channels table is small, so this is much faster than
+// scanning the logs table.
+func GetAllModelNames() ([]string, error) {
+	var modelLists []string
+	err := DB.Table("channels").Pluck("models", &modelLists).Error
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for _, list := range modelLists {
+		for _, m := range strings.Split(list, ",") {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			if _, ok := seen[m]; !ok {
+				seen[m] = struct{}{}
+				names = append(names, m)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // GetSummary returns aggregated stats grouped by token_name + model_name.
@@ -229,8 +278,8 @@ func GetDailyStats(p QueryParams) ([]models.DailyStat, error) {
 	return stats, nil
 }
 
-// applyCommonFilters applies the token_names/time-range filters shared by
-// all stats queries.
+// applyCommonFilters applies the token_names/model_names/time-range filters
+// shared by all stats queries.
 func applyCommonFilters(tx *gorm.DB, p QueryParams) *gorm.DB {
 	if len(p.TokenNames) > 0 {
 		placeholders := make([]string, len(p.TokenNames))
@@ -240,6 +289,15 @@ func applyCommonFilters(tx *gorm.DB, p QueryParams) *gorm.DB {
 			args[i] = n
 		}
 		tx = tx.Where("token_name IN ("+strings.Join(placeholders, ",")+")", args...)
+	}
+	if len(p.ModelNames) > 0 {
+		placeholders := make([]string, len(p.ModelNames))
+		args := make([]interface{}, len(p.ModelNames))
+		for i, m := range p.ModelNames {
+			placeholders[i] = "?"
+			args[i] = m
+		}
+		tx = tx.Where("model_name IN ("+strings.Join(placeholders, ",")+")", args...)
 	}
 	if p.Start > 0 {
 		tx = tx.Where("created_at >= ?", p.Start)
@@ -312,4 +370,115 @@ func GetAbnormalLogs(p QueryParams) ([]models.AbnormalLog, error) {
 		})
 	}
 	return logs, nil
+}
+
+// requestLogRow is the scan target for per-request detail queries. The
+// formatted timestamp is produced by dateTimeFromUnixtime, which aliases
+// the expression to created_at_str.
+type requestLogRow struct {
+	TokenName        string `gorm:"column:token_name"`
+	ModelName        string `gorm:"column:model_name"`
+	CreatedAt        string `gorm:"column:created_at_str"`
+	UseTime          int64  `gorm:"column:use_time"`
+	IsStream         bool   `gorm:"column:is_stream"`
+	Frt              int64  `gorm:"column:frt"`
+	PromptTokens     int64  `gorm:"column:prompt_tokens"`
+	CompletionTokens int64  `gorm:"column:completion_tokens"`
+	CacheTokens      int64  `gorm:"column:cache_tokens"`
+	StatusCode       int64  `gorm:"column:status_code"`
+}
+
+// requestLogSelect is the shared select list for per-request detail queries.
+func requestLogSelect() string {
+	return "token_name, " +
+		"model_name, " +
+		dateTimeFromUnixtime("created_at") + ", " +
+		"use_time, " +
+		"is_stream, " +
+		"frt, " +
+		"prompt_tokens, " +
+		"completion_tokens, " +
+		"cache_tokens, " +
+		"status_code"
+}
+
+func requestLogFromRow(r requestLogRow) models.RequestLog {
+	return models.RequestLog{
+		TokenName:        r.TokenName,
+		ModelName:        r.ModelName,
+		CreatedAt:        r.CreatedAt,
+		UseTime:          r.UseTime,
+		IsStream:         r.IsStream,
+		Frt:              r.Frt,
+		PromptTokens:     r.PromptTokens,
+		CompletionTokens: r.CompletionTokens,
+		CacheTokens:      r.CacheTokens,
+		TotalTokens:      r.PromptTokens + r.CompletionTokens,
+		StatusCode:       r.StatusCode,
+	}
+}
+
+// CountRequestLogs returns the number of individual request records
+// matching the given filters.
+func CountRequestLogs(p QueryParams) (int64, error) {
+	var n int64
+	err := buildBaseQuery(p).Count(&n).Error
+	return n, err
+}
+
+// GetRequestLogs returns individual request records (newest first)
+// matching the given filters, paginated.
+func GetRequestLogs(p QueryParams, offset, limit int) ([]models.RequestLog, error) {
+	var rows []requestLogRow
+	err := buildBaseQuery(p).
+		Select(requestLogSelect()).
+		Order("created_at DESC, id DESC").
+		Limit(limit).
+		Offset(offset).
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	logs := make([]models.RequestLog, 0, len(rows))
+	for _, r := range rows {
+		logs = append(logs, requestLogFromRow(r))
+	}
+	return logs, nil
+}
+
+// StreamRequestLogs streams individual request records (oldest first)
+// matching the given filters, invoking fn once per batch. It reads the
+// database with a cursor so that exports of very large result sets stay
+// memory-safe.
+func StreamRequestLogs(p QueryParams, batchSize int, fn func(batch []models.RequestLog) error) error {
+	rows, err := buildBaseQuery(p).
+		Select(requestLogSelect()).
+		Order("created_at ASC, id ASC").
+		Rows()
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	batch := make([]models.RequestLog, 0, batchSize)
+	for rows.Next() {
+		var r requestLogRow
+		if err := LogDB.ScanRows(rows, &r); err != nil {
+			return err
+		}
+		batch = append(batch, requestLogFromRow(r))
+		if len(batch) >= batchSize {
+			if err := fn(batch); err != nil {
+				return err
+			}
+			batch = batch[:0]
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(batch) > 0 {
+		return fn(batch)
+	}
+	return nil
 }

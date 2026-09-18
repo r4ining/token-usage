@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react';
 import { Layout, Menu, ConfigProvider, theme } from 'antd';
-import { BarChartOutlined, SettingOutlined } from '@ant-design/icons';
+import { BarChartOutlined, FieldTimeOutlined, SettingOutlined } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import Dashboard from './pages/Dashboard';
+import Requests from './pages/Requests';
 import PriceConfig from './pages/PriceConfig';
 
 const { Content, Sider } = Layout;
 
-type PageKey = 'dashboard' | 'prices';
+type PageKey = 'dashboard' | 'requests' | 'prices';
 
 function App() {
   const getPageFromHash = (): PageKey => {
     if (typeof window === 'undefined') return 'dashboard';
     const hash = window.location.hash.slice(1);
-    return hash === 'prices' ? 'prices' : 'dashboard';
+    if (hash === 'prices') return 'prices';
+    if (hash === 'requests') return 'requests';
+    return 'dashboard';
   };
 
   const [page, setPage] = useState<PageKey>('dashboard');
@@ -32,7 +35,7 @@ function App() {
 
   const updatePage = (newPage: PageKey) => {
     setPage(newPage);
-    window.location.hash = newPage === 'prices' ? 'prices' : '';
+    window.location.hash = newPage === 'dashboard' ? '' : newPage;
   };
 
   return (
@@ -51,6 +54,7 @@ function App() {
             onClick={({ key }) => updatePage(key as PageKey)}
             items={[
               { key: 'dashboard', icon: <BarChartOutlined />, label: '用量统计' },
+              { key: 'requests', icon: <FieldTimeOutlined />, label: '请求明细' },
               { key: 'prices', icon: <SettingOutlined />, label: '价格配置' },
             ]}
           />
@@ -59,6 +63,9 @@ function App() {
           <Content style={{ background: 'transparent', minHeight: 280 }}>
             <div style={{ display: page === 'dashboard' ? 'block' : 'none' }}>
               <Dashboard />
+            </div>
+            <div style={{ display: page === 'requests' ? 'block' : 'none' }}>
+              <Requests />
             </div>
             <div style={{ display: page === 'prices' ? 'block' : 'none' }}>
               <PriceConfig />

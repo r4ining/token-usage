@@ -111,3 +111,20 @@ type AbnormalLog struct {
 	CreatedAt        string `json:"created_at"`
 	ErrorReason      string `json:"error_reason"`
 }
+
+// RequestLog represents a single API request record with timing details
+// (duration, TTFT), token usage and cache info, for the per-request
+// detail page and Excel export.
+type RequestLog struct {
+	TokenName        string `json:"token_name"`
+	ModelName        string `json:"model_name"`
+	CreatedAt        string `json:"created_at"`
+	UseTime          int64  `json:"use_time"`
+	IsStream         bool   `json:"is_stream"`
+	Frt              int64  `json:"frt"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	CacheTokens      int64  `json:"cache_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	StatusCode       int64  `json:"status_code"`
+}

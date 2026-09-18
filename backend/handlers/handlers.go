@@ -22,11 +22,14 @@ func Register(r *gin.Engine, cfg *config.Config) {
 	api := r.Group("/api")
 
 	api.GET("/tokens", func(c *gin.Context) { getTokens(c, cfg) })
+	api.GET("/models", func(c *gin.Context) { getModels(c, cfg) })
 	api.GET("/stats/summary", func(c *gin.Context) { getSummary(c, cfg) })
 	api.GET("/stats/daily", func(c *gin.Context) { getDaily(c, cfg) })
 	api.GET("/stats/abnormal", func(c *gin.Context) { getAbnormal(c, cfg) })
+	api.GET("/stats/requests", func(c *gin.Context) { getRequests(c, cfg) })
 	api.GET("/export", func(c *gin.Context) { exportExcel(c, cfg) })
 	api.GET("/export/abnormal", func(c *gin.Context) { exportAbnormalExcel(c, cfg) })
+	api.GET("/export/requests", func(c *gin.Context) { exportRequestsExcel(c, cfg) })
 	api.GET("/prices", func(c *gin.Context) { getPrices(c, cfg) })
 	api.POST("/prices", func(c *gin.Context) { savePrices(c, cfg) })
 }
@@ -42,6 +45,15 @@ func parseQueryParams(c *gin.Context, tableName string) db.QueryParams {
 		t = strings.TrimSpace(t)
 		if t != "" {
 			tokenNames = append(tokenNames, t)
+		}
+	}
+
+	modelNamesRaw := c.Query("model_names")
+	var modelNames []string
+	for _, m := range strings.Split(modelNamesRaw, ",") {
+		m = strings.TrimSpace(m)
+		if m != "" {
+			modelNames = append(modelNames, m)
 		}
 	}
 
@@ -78,6 +90,7 @@ func parseQueryParams(c *gin.Context, tableName string) db.QueryParams {
 
 	return db.QueryParams{
 		TokenNames:      tokenNames,
+		ModelNames:      modelNames,
 		Start:           start,
 		End:             end,
 		TableName:       tableName,
@@ -93,6 +106,15 @@ func errJSON(c *gin.Context, code int, msg string) {
 
 func getTokens(c *gin.Context, cfg *config.Config) {
 	names, err := db.GetAllTokenNames(cfg.DBTable)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": names})
+}
+
+func getModels(c *gin.Context, cfg *config.Config) {
+	names, err := db.GetAllModelNames()
 	if err != nil {
 		errJSON(c, http.StatusInternalServerError, err.Error())
 		return
@@ -152,6 +174,410 @@ func getAbnormal(c *gin.Context, cfg *config.Config) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": logs})
+}
+
+func getRequests(c *gin.Context, cfg *config.Config) {
+	p := parseQueryParams(c, cfg.DBTable)
+
+	page, _ := strconv.Atoi(c.Query("page"))
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 1000 {
+		pageSize = 50
+	}
+
+	total, err := db.CountRequestLogs(p)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	logs, err := db.GetRequestLogs(p, (page-1)*pageSize, pageSize)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":      logs,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// --- per-request detail export ---
+
+// maxDataRowsPerSheet keeps each sheet below Excel's hard limit of
+// 1,048,576 rows (2 rows are used for the time range and the header).
+// minDataRowsPerSheet is the floor for the user-configured per-sheet row
+// count, to avoid generating an absurd number of sheets.
+const (
+	maxDataRowsPerSheet = 1_000_000
+	minDataRowsPerSheet = 10_000
+)
+
+var requestSheetHeaders = []string{"时间", "Key名称", "模型", "耗时(秒)", "流式", "TTFT(ms)", "输入Tokens", "缓存命中Tokens", "输出Tokens", "总Tokens", "状态码"}
+
+// requestExportOptions carries the user-configurable options of the
+// per-request detail export.
+type requestExportOptions struct {
+	useCachePrice  bool
+	thousandSep    bool
+	hideStatusCode bool
+	sheetRows      int
+}
+
+func streamLabel(isStream bool) string {
+	if isStream {
+		return "是"
+	}
+	return "否"
+}
+
+// ttftValue returns the first-token latency in ms for streaming requests
+// with a non-negative frt; "-" otherwise (non-streaming requests are
+// recorded with frt = -1000, streaming errors with frt < 0).
+func ttftValue(l models.RequestLog) interface{} {
+	if l.IsStream && l.Frt >= 0 {
+		return l.Frt
+	}
+	return "-"
+}
+
+func exportRequestsExcel(c *gin.Context, cfg *config.Config) {
+	p := parseQueryParams(c, cfg.DBTable)
+
+	// Per-sheet data row count; defaults to 1,000,000 and is clamped to
+	// [10,000, 1,000,000] so a sheet can never exceed Excel's row limit.
+	sheetRows, _ := strconv.Atoi(c.Query("sheet_rows"))
+	if sheetRows <= 0 {
+		sheetRows = maxDataRowsPerSheet
+	}
+	if sheetRows > maxDataRowsPerSheet {
+		sheetRows = maxDataRowsPerSheet
+	}
+	if sheetRows < minDataRowsPerSheet {
+		sheetRows = minDataRowsPerSheet
+	}
+
+	useCachePrice := c.Query("use_cache_price") == "1"
+	opts := requestExportOptions{
+		useCachePrice:  useCachePrice,
+		thousandSep:    c.Query("thousand_sep") == "1",
+		hideStatusCode: c.Query("hide_status_code") == "1",
+		sheetRows:      sheetRows,
+	}
+	pc, err := pricing.Load(cfg.DataDir)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	f := excelize.NewFile()
+	defer f.Close()
+
+	timeRange := formatTimeRange(p.Start, p.End)
+
+	// Create the summary sheet first so that it appears as the first tab;
+	// its values are filled in after the data sheets have been streamed.
+	if _, err := f.NewSheet(requestSummarySheetName); err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	usage, err := writeRequestSheets(f, p, timeRange, opts)
+	if err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := writeRequestSummarySheet(f, p, usage, pc, timeRange, opts); err != nil {
+		errJSON(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	f.DeleteSheet("Sheet1")
+
+	filename := fmt.Sprintf("token-usage-requests-%s.xlsx", time.Now().Format("20060102-150405"))
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	if err := f.Write(c.Writer); err != nil {
+		// Headers are already sent at this point; nothing else to do.
+		return
+	}
+}
+
+// modelUsage accumulates per-model token usage during a streaming export so
+// the summary sheet can compute the total cost from the price config.
+type modelUsage struct {
+	Requests    int64
+	Prompt      int64
+	Completion  int64
+	CacheTokens int64
+}
+
+const requestSummarySheetName = "汇总"
+
+// writeRequestSummarySheet writes the "汇总" sheet with overall totals and
+// the total cost computed with the same pricing logic as the dashboard.
+// When opts.thousandSep is true, numeric cells get a comma-grouped number
+// format.
+func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[string]*modelUsage, pc *models.PriceConfig, timeRange string, opts requestExportOptions) error {
+	sw, err := f.NewStreamWriter(requestSummarySheetName)
+	if err != nil {
+		return err
+	}
+
+	border := []excelize.Border{{Type: "left", Color: "000000", Style: 1}, {Type: "top", Color: "000000", Style: 1}, {Type: "right", Color: "000000", Style: 1}, {Type: "bottom", Color: "000000", Style: 1}}
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:   &excelize.Font{Bold: true},
+		Border: border,
+	})
+	dataStyle, _ := f.NewStyle(&excelize.Style{
+		Border: border,
+	})
+	intNumStyle, costNumStyle := dataStyle, dataStyle
+	if opts.thousandSep {
+		intFmt := "#,##0"
+		intNumStyle, _ = f.NewStyle(&excelize.Style{
+			Border:       border,
+			CustomNumFmt: &intFmt,
+		})
+		costFmt := "#,##0.0000"
+		costNumStyle, _ = f.NewStyle(&excelize.Style{
+			Border:       border,
+			CustomNumFmt: &costFmt,
+		})
+	}
+
+	models := make([]string, 0, len(usage))
+	for m := range usage {
+		models = append(models, m)
+	}
+	sort.Strings(models)
+
+	var requests, prompt, completion, cache int64
+	costUSD := 0.0
+	var unpriced []string
+	for _, m := range models {
+		u := usage[m]
+		requests += u.Requests
+		prompt += u.Prompt
+		completion += u.Completion
+		cache += u.CacheTokens
+		entry := pricing.FindEntry(pc, m)
+		if entry == nil {
+			unpriced = append(unpriced, m)
+			continue
+		}
+		costUSD += pricing.CalcCost(entry, pc.USDToCNY, u.Prompt, u.Completion, u.CacheTokens, opts.useCachePrice)
+	}
+	costCNY := costUSD * pc.USDToCNY
+
+	keysLabel := "全部"
+	if len(p.TokenNames) > 0 {
+		keysLabel = strings.Join(p.TokenNames, "、")
+	}
+	modelsLabel := "全部"
+	if len(p.ModelNames) > 0 {
+		modelsLabel = strings.Join(p.ModelNames, "、")
+	}
+
+	headers := []string{"Key名称", "模型", "请求数量", "输入 Tokens", "缓存命中 Tokens", "输出 Tokens", "总 Tokens", "费用 (USD)", "费用 (CNY)"}
+	lastCol, _ := excelize.ColumnNumberToName(len(headers))
+
+	// Widen columns so large token counts stay readable.
+	if err := sw.SetColWidth(1, len(headers), 18); err != nil {
+		return err
+	}
+
+	// Time range row (merged across all columns).
+	cell, _ := excelize.CoordinatesToCellName(1, 1)
+	if err := sw.SetRow(cell, []interface{}{excelize.Cell{StyleID: dataStyle, Value: "查询时间区间：" + timeRange}}); err != nil {
+		return err
+	}
+	sw.MergeCell(cell, lastCol+"1")
+
+	// Header row: Key/model filters first, then one column per metric.
+	headerCells := make([]interface{}, len(headers))
+	for i, h := range headers {
+		headerCells[i] = excelize.Cell{StyleID: headerStyle, Value: h}
+	}
+	row := 2
+	cell, _ = excelize.CoordinatesToCellName(1, row)
+	if err := sw.SetRow(cell, headerCells); err != nil {
+		return err
+	}
+	row++
+
+	// Value row.
+	values := []interface{}{
+		keysLabel, modelsLabel,
+		requests, prompt, cache, completion, prompt + completion,
+		math.Round(costUSD*10000) / 10000, math.Round(costCNY*10000) / 10000,
+	}
+	valueCells := make([]interface{}, len(values))
+	for i, v := range values {
+		styleID := dataStyle
+		if opts.thousandSep {
+			switch v.(type) {
+			case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+				styleID = intNumStyle
+			case float32, float64:
+				styleID = costNumStyle
+			}
+		}
+		valueCells[i] = excelize.Cell{StyleID: styleID, Value: v}
+	}
+	cell, _ = excelize.CoordinatesToCellName(1, row)
+	if err := sw.SetRow(cell, valueCells); err != nil {
+		return err
+	}
+	row++
+
+	// Optional note about models without a configured price.
+	if len(unpriced) > 0 {
+		cell, _ = excelize.CoordinatesToCellName(1, row)
+		if err := sw.SetRow(cell, []interface{}{
+			excelize.Cell{StyleID: dataStyle, Value: "未配置价格的模型（未计入费用）：" + strings.Join(unpriced, "、")},
+		}); err != nil {
+			return err
+		}
+		sw.MergeCell(cell, lastCol+strconv.Itoa(row))
+	}
+	return nil
+}
+
+// writeRequestSheets streams all matching request records into the workbook
+// using excelize's StreamWriter, splitting into multiple sheets whenever
+// opts.sheetRows data rows have been written to the current sheet. It returns
+// the per-model usage accumulated while streaming, for the summary sheet.
+// When opts.thousandSep is true, numeric cells get a comma-grouped number
+// format; when opts.hideStatusCode is true, the status-code column is
+// omitted.
+func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, opts requestExportOptions) (map[string]*modelUsage, error) {
+	usage := map[string]*modelUsage{}
+	getUsage := func(model string) *modelUsage {
+		u, ok := usage[model]
+		if !ok {
+			u = &modelUsage{}
+			usage[model] = u
+		}
+		return u
+	}
+
+	headers := requestSheetHeaders
+	if opts.hideStatusCode {
+		headers = headers[:len(headers)-1]
+	}
+
+	border := []excelize.Border{{Type: "left", Color: "000000", Style: 1}, {Type: "top", Color: "000000", Style: 1}, {Type: "right", Color: "000000", Style: 1}, {Type: "bottom", Color: "000000", Style: 1}}
+	headerStyle, _ := f.NewStyle(&excelize.Style{
+		Font:   &excelize.Font{Bold: true},
+		Border: border,
+	})
+	dataStyle, _ := f.NewStyle(&excelize.Style{
+		Border: border,
+	})
+	dataNumStyle := dataStyle
+	if opts.thousandSep {
+		numFmt := "#,##0"
+		dataNumStyle, _ = f.NewStyle(&excelize.Style{
+			Border:       border,
+			CustomNumFmt: &numFmt,
+		})
+	}
+
+	sheetCount := 0
+	var sw *excelize.StreamWriter
+	sheetRow := 0 // current row index within the sheet (1-based)
+	dataRows := 0 // data rows written to the current sheet
+
+	newSheet := func() error {
+		sheetCount++
+		name := "请求明细"
+		if sheetCount > 1 {
+			name = fmt.Sprintf("请求明细%d", sheetCount)
+		}
+		if _, err := f.NewSheet(name); err != nil {
+			return err
+		}
+		var err error
+		sw, err = f.NewStreamWriter(name)
+		if err != nil {
+			return err
+		}
+		lastCol, _ := excelize.ColumnNumberToName(len(headers))
+		if err := sw.SetRow("A1", []interface{}{
+			excelize.Cell{StyleID: headerStyle, Value: "查询时间区间：" + timeRange},
+		}); err != nil {
+			return err
+		}
+		sw.MergeCell("A1", lastCol+"1")
+		headerCells := make([]interface{}, len(headers))
+		for i, h := range headers {
+			headerCells[i] = excelize.Cell{StyleID: headerStyle, Value: h}
+		}
+		if err := sw.SetRow("A2", headerCells); err != nil {
+			return err
+		}
+		sheetRow = 2
+		dataRows = 0
+		return nil
+	}
+
+	if err := newSheet(); err != nil {
+		return nil, err
+	}
+
+	err := db.StreamRequestLogs(p, 1000, func(batch []models.RequestLog) error {
+		for _, l := range batch {
+			if dataRows >= opts.sheetRows {
+				if err := sw.Flush(); err != nil {
+					return err
+				}
+				if err := newSheet(); err != nil {
+					return err
+				}
+			}
+			sheetRow++
+			vals := []interface{}{
+				l.CreatedAt, l.TokenName, l.ModelName, l.UseTime,
+				streamLabel(l.IsStream), ttftValue(l),
+				l.PromptTokens, l.CacheTokens, l.CompletionTokens, l.TotalTokens, l.StatusCode,
+			}
+			if opts.hideStatusCode {
+				vals = vals[:len(vals)-1]
+			}
+			cells := make([]interface{}, len(vals))
+			for i, v := range vals {
+				styleID := dataStyle
+				if opts.thousandSep {
+					switch v.(type) {
+					case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+						styleID = dataNumStyle
+					}
+				}
+				cells[i] = excelize.Cell{StyleID: styleID, Value: v}
+			}
+			cell, _ := excelize.CoordinatesToCellName(1, sheetRow)
+			if err := sw.SetRow(cell, cells); err != nil {
+				return err
+			}
+			dataRows++
+
+			u := getUsage(l.ModelName)
+			u.Requests++
+			u.Prompt += l.PromptTokens
+			u.Completion += l.CompletionTokens
+			u.CacheTokens += l.CacheTokens
+		}
+		return nil
+	})
+	return usage, err
 }
 
 func exportAbnormalExcel(c *gin.Context, cfg *config.Config) {

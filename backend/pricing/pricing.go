@@ -10,7 +10,7 @@ import (
 	"github.com/wangshihong/token-usage/models"
 )
 
-const defaultUSDToCNY = 7.25
+const defaultUSDToCNY = 7.3
 
 func defaultConfig() *models.PriceConfig {
 	return &models.PriceConfig{
@@ -19,33 +19,54 @@ func defaultConfig() *models.PriceConfig {
 				ID:          "glm-5.1",
 				ModelID:     "glm-5.1",
 				Aliases:     []string{},
-				InputPrice:  8.0000 / defaultUSDToCNY, // CNY to USD
-				OutputPrice: 28.0000 / defaultUSDToCNY, // CNY to USD
-				CachePrice:  2.0000 / defaultUSDToCNY, // CNY to USD
+				InputPrice:  8,
+				OutputPrice: 28,
+				CachePrice:  2,
+				Currency:    "CNY",
 			},
 			{
 				ID:          "glm-5.2",
 				ModelID:     "glm-5.2",
 				Aliases:     []string{},
-				InputPrice:  8.0000 / defaultUSDToCNY, // CNY to USD
-				OutputPrice: 28.0000 / defaultUSDToCNY, // CNY to USD
-				CachePrice:  2.0000 / defaultUSDToCNY, // CNY to USD
+				InputPrice:  8,
+				OutputPrice: 28,
+				CachePrice:  2,
+				Currency:    "CNY",
+			},
+			{
+				ID:          "glm-5.3",
+				ModelID:     "glm-5.3",
+				Aliases:     []string{},
+				InputPrice:  8,
+				OutputPrice: 28,
+				CachePrice:  2,
+				Currency:    "CNY",
 			},
 			{
 				ID:          "minimax-m2.7",
 				ModelID:     "minimax-m2.7",
 				Aliases:     []string{},
-				InputPrice:  2.1000 / defaultUSDToCNY, // CNY to USD
-				OutputPrice: 8.4000 / defaultUSDToCNY, // CNY to USD
-				CachePrice:  0.4200 / defaultUSDToCNY, // CNY to USD
+				InputPrice:  0.301,
+				OutputPrice: 1.203,
+				CachePrice:  0.1505,
+				Currency:    "USD",
 			},
 			{
 				ID:          "minimax-m3",
 				ModelID:     "minimax-m3",
 				Aliases:     []string{},
-				InputPrice:  2.1000 / defaultUSDToCNY, // CNY to USD
-				OutputPrice: 8.4000 / defaultUSDToCNY, // CNY to USD
-				CachePrice:  0.4200 / defaultUSDToCNY, // CNY to USD
+				InputPrice:  0.289655,
+				OutputPrice: 1.158621,
+				CachePrice:  0.057931,
+			},
+			{
+				ID:          "kimi-k3",
+				ModelID:     "kimi-k3",
+				Aliases:     []string{},
+				InputPrice:  20,
+				OutputPrice: 100,
+				CachePrice:  2,
+				Currency:    "CNY",
 			},
 		},
 		USDToCNY: defaultUSDToCNY,

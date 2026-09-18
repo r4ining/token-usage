@@ -8,9 +8,10 @@
 - **时间维度**：今日 / 本周 / 本月 / 近30天 / 所有时间 / 自定义时间范围
 - **模型汇总**：按模型统计请求数、输入/输出/缓存 token、费用（USD/CNY）
 - **每日明细**：查看每天每个 Key 每个模型的使用明细
+- **请求明细**：逐条查看每个请求的请求时间、耗时、流式标记、TTFT（首字响应时间，非流式显示 -）、输入/输出/缓存命中 tokens、状态码，支持分页与服务端 Excel 导出
 - **价格配置**：自定义模型单价（支持 USD/CNY 切换、模型别名映射、汇率设置）
 - **缓存读计费**：支持缓存命中 token 按独立价格计费（避免与输入 token 双重计费）
-- **导出 Excel**：含「模型汇总」和「每日明细」两个 Sheet，带小计/合计行
+- **导出 Excel**：含「模型汇总」和「每日明细」两个 Sheet，带小计/合计行；请求明细导出为独立 Sheet，超过单表行数上限时自动分表
 
 ## 技术栈
 
@@ -72,18 +73,26 @@ docker compose up -d --build
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/api/tokens` | 获取所有 API Key 名称 |
+| GET | `/api/models` | 获取所有模型名称（来自 MySQL channels 表的 models 字段，去重） |
 | GET | `/api/stats/summary` | 模型汇总统计 |
 | GET | `/api/stats/daily` | 每日明细统计 |
+| GET | `/api/stats/requests` | 请求明细（分页） |
 | GET | `/api/export` | 导出 Excel |
+| GET | `/api/export/requests` | 导出请求明细 Excel（流式，超限自动分表，首Sheet为汇总） |
 | GET | `/api/prices` | 获取价格配置 |
 | POST | `/api/prices` | 保存价格配置 |
 
 ### 查询参数
 
 - `token_names`：逗号分隔的 Key 名称列表（不传则查全部）
+- `model_names`：逗号分隔的模型名称列表（不传则查全部）
 - `granularity`：`today` / `week` / `month` / `last30` / `all` / `custom`
 - `start` / `end`：Unix 时间戳（`granularity=custom` 时必填）
 - `use_cache_price`：`1` 表示缓存读按独立价格计费
+- `thousand_sep`：`1` 表示导出的 Excel 数值列使用千分位（英文逗号）分隔显示
+- `hide_status_code`：`1` 表示页面与导出中不显示「状态码」列
+- `page` / `page_size`：请求明细分页参数（默认 `1` / `50`，`page_size` 最大 1000）
+- `sheet_rows`：请求明细导出时每个 Sheet 的最大数据行数（默认 `1000000`，有效范围 `10000` ~ `1000000`，超出自动分多个 Sheet）
 
 ## 本地开发
 
