@@ -105,6 +105,14 @@ function calcCostUSD(
 
 // ---------- end cost helpers ----------
 
+// Convert a price entry's price to CNY for display.
+function priceToCNY(entry: PriceEntry | null, usdToCNY: number): { input: number; cache: number; output: number } {
+  if (!entry) return { input: 0, cache: 0, output: 0 };
+  const ec = (entry.currency || 'USD').toUpperCase();
+  const conv = (p: number) => ec === 'CNY' ? p : p * usdToCNY;
+  return { input: conv(entry.input_price), cache: conv(entry.cache_price), output: conv(entry.output_price) };
+}
+
 function fmtUSD(n: number, sep = false): string {
   return '$' + (sep ? addThousandSep(n.toFixed(4)) : n.toFixed(4));
 }
@@ -441,15 +449,26 @@ export default function Dashboard() {
     if (activeTab === 'model') {
       // ── 按模型汇总 ──
       const summarySheet = wb.addWorksheet('模型汇总');
-      const SUMMARY_COLS = 7 + (calcCost && showUSD ? 1 : 0) + (calcCost ? 1 : 0);
+      const SUMMARY_COLS = 7 + (calcCost ? 3 : 0) + (calcCost && showUSD ? 1 : 0) + (calcCost ? 1 : 0);
       summarySheet.addRow([`查询时间区间：${timeLabel}`]);
       const summaryHeader = ['Key名称', '模型', '请求次数', '输入Tokens', '缓存读Tokens', '输出Tokens', '总Tokens'];
+      if (calcCost) {
+        summaryHeader.push('输入价格(元/百万 tokens)', '缓存价格(元/百万 tokens)', '输出价格(元/百万 tokens)');
+      }
       if (calcCost && showUSD) summaryHeader.push('费用(USD)');
       if (calcCost) summaryHeader.push('费用(CNY)');
       summarySheet.addRow(summaryHeader);
 
-      const buildSummaryRow = (tokenName: string, modelName: string, rc: number, pt: number, ct: number, cpt: number, tt: number, usd: number, cny: number) => {
+      const buildSummaryRow = (tokenName: string, modelName: string, rc: number, pt: number, ct: number, cpt: number, tt: number, usd: number, cny: number, isSubtotalRow: boolean) => {
         const cells: (string | number)[] = [tokenName, modelName, rc, fmtTok(pt), fmtTok(ct), fmtTok(cpt), fmtTok(tt)];
+        if (calcCost) {
+          if (isSubtotalRow) {
+            cells.push('', '', '');
+          } else {
+            const p = priceToCNY(findPriceEntry(priceConfig, modelName), priceConfig?.usd_to_cny ?? 7.25);
+            cells.push(p.input > 0 ? p.input.toFixed(4) : '', p.cache > 0 ? p.cache.toFixed(4) : '', p.output > 0 ? p.output.toFixed(4) : '');
+          }
+        }
         if (calcCost && showUSD) cells.push(fmtCost(usd));
         if (calcCost) cells.push(fmtCost(cny));
         return cells;
@@ -462,7 +481,7 @@ export default function Dashboard() {
         summarySheet.addRow(buildSummaryRow(
           row.token_name, row.model_name, row.request_count,
           row.prompt_tokens, row.cache_tokens, row.completion_tokens, row.total_tokens,
-          row.cost_usd, row.cost_cny,
+          row.cost_usd, row.cost_cny, !!row.isSubtotal,
         ));
         if (row.keyRowSpan > 1) {
           summaryKeyMerges.push({ startRow: excelRow, endRow: excelRow + row.keyRowSpan - 1 });
@@ -475,10 +494,14 @@ export default function Dashboard() {
         summarySheet.addRow(buildSummaryRow(
           '合计', '', gt.request_count,
           gt.prompt_tokens, gt.cache_tokens, gt.completion_tokens, gt.total_tokens,
-          gt.cost_usd, gt.cost_cny,
+          gt.cost_usd, gt.cost_cny, true,
         ));
         summarySubtotalRows.push(gtRow);
       }
+      // Formula note row.
+      const formulaRow = summarySheet.rowCount + 1;
+      summarySheet.addRow(['费用计算公式：费用 = (非缓存 token 数 × 输入价格 + 缓存 token 数 × 缓存价格 + 补全 token 数 × 输出价格) / 1,000,000（价格单位：元 / 百万 tokens）']);
+      summarySheet.mergeCells(formulaRow, 1, formulaRow, SUMMARY_COLS);
       applySheetBordersAndMerge(summarySheet, SUMMARY_COLS, 3, summaryKeyMerges);
       for (const r of summarySubtotalRows) {
         for (let c = 1; c <= SUMMARY_COLS; c++) summarySheet.getCell(r, c).fill = subtotalFill;
@@ -586,15 +609,45 @@ export default function Dashboard() {
       sorter: () => 0,
       sortOrder: modelSortField === 'total_tokens' ? modelSortOrder : null,
       render: (v: number) => <strong>{fmtTableToken(v)}</strong> },
+    ...(calcCost ? [{ title: '输入价格(元/百万 tokens)', key: 'price_input_cny', align: 'right' as const, width: 150,
+      render: (_v: unknown, record: ModelRow) => {
+        if (record.isSubtotal) return null;
+        const p = priceToCNY(findPriceEntry(priceConfig, record.model_name), priceConfig?.usd_to_cny ?? 7.25);
+        return p.input > 0 ? <Text type="secondary">{p.input.toFixed(4)}</Text> : <Text type="secondary">-</Text>;
+      } } as ColumnsType<ModelRow>[number]] : []),
+    ...(calcCost ? [{ title: '缓存价格(元/百万 tokens)', key: 'price_cache_cny', align: 'right' as const, width: 150,
+      render: (_v: unknown, record: ModelRow) => {
+        if (record.isSubtotal) return null;
+        const p = priceToCNY(findPriceEntry(priceConfig, record.model_name), priceConfig?.usd_to_cny ?? 7.25);
+        return p.cache > 0 ? <Text type="secondary">{p.cache.toFixed(4)}</Text> : <Text type="secondary">-</Text>;
+      } } as ColumnsType<ModelRow>[number]] : []),
+    ...(calcCost ? [{ title: '输出价格(元/百万 tokens)', key: 'price_output_cny', align: 'right' as const, width: 150,
+      render: (_v: unknown, record: ModelRow) => {
+        if (record.isSubtotal) return null;
+        const p = priceToCNY(findPriceEntry(priceConfig, record.model_name), priceConfig?.usd_to_cny ?? 7.25);
+        return p.output > 0 ? <Text type="secondary">{p.output.toFixed(4)}</Text> : <Text type="secondary">-</Text>;
+      } } as ColumnsType<ModelRow>[number]] : []),
     ...(calcCost && showUSD ? [{ title: '费用 (USD)', dataIndex: 'cost_usd', key: 'cost_usd', align: 'right' as const,
       sorter: () => 0,
       sortOrder: modelSortField === 'cost_usd' ? modelSortOrder : null,
       render: (v: number) => v > 0 ? <Tag color="green">{fmtUSDLocal(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
-    ...(calcCost ? [{ title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
+    ...(calcCost ? [{ title: (
+        <span>
+          费用 (CNY)
+          <Tooltip
+            title="费用 = (非缓存 token 数 × 输入价格 + 缓存 token 数 × 缓存价格 + 补全 token 数 × 输出价格) / 1,000,000（价格单位：元 / 百万 tokens）"
+            mouseEnterDelay={0.2}
+            color="rgba(0,0,0,0.78)"
+            overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 420 }}
+          >
+            <InfoCircleOutlined style={{ marginLeft: 4, color: '#8c8c8c', cursor: 'help' }} />
+          </Tooltip>
+        </span>
+      ), dataIndex: 'cost_cny', key: 'cost_cny', align: 'right' as const,
       sorter: () => 0,
       sortOrder: modelSortField === 'cost_cny' ? modelSortOrder : null,
       render: (v: number) => v > 0 ? <Tag color="blue">{fmtCNYLocal(v)}</Tag> : <Text type="secondary">未配置</Text> }] : []),
-  ] as ColumnsType<ModelRow>), [fmtTableToken, fmtCount, fmtUSDLocal, fmtCNYLocal, modelSortField, modelSortOrder, calcCost, showUSD]);
+  ] as ColumnsType<ModelRow>), [fmtTableToken, fmtCount, fmtUSDLocal, fmtCNYLocal, modelSortField, modelSortOrder, calcCost, showUSD, priceConfig]);
 
   const dailyColumns: ColumnsType<DailyRow> = useMemo(() => ([
     { title: (
@@ -909,13 +962,16 @@ export default function Dashboard() {
                         <Table.Summary.Cell index={6} align="right">
                           <strong>{fmtTableToken(summary.total_tokens)}</strong>
                         </Table.Summary.Cell>
+                        {calcCost && <Table.Summary.Cell index={7} />}
+                        {calcCost && <Table.Summary.Cell index={8} />}
+                        {calcCost && <Table.Summary.Cell index={9} />}
                         {calcCost && showUSD && (
-                          <Table.Summary.Cell index={7} align="right">
+                          <Table.Summary.Cell index={10} align="right">
                             {totalUSD > 0 && <Tag color="green">{fmtUSDLocal(totalUSD)}</Tag>}
                           </Table.Summary.Cell>
                         )}
                         {calcCost && (
-                          <Table.Summary.Cell index={8} align="right">
+                          <Table.Summary.Cell index={11} align="right">
                             {totalCNY > 0 && <Tag color="blue">{fmtCNYLocal(totalCNY)}</Tag>}
                           </Table.Summary.Cell>
                         )}

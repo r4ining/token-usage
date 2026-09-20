@@ -71,6 +71,7 @@ export interface RequestLog {
   cache_tokens: number;
   total_tokens: number;
   status_code: number;
+  cost_cny: number;
 }
 
 export interface RequestLogsResponse {
@@ -78,6 +79,7 @@ export interface RequestLogsResponse {
   total: number;
   page: number;
   page_size: number;
+  total_cost_cny: number;
 }
 
 export interface PriceEntry {

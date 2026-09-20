@@ -59,6 +59,7 @@ export default function Requests() {
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [total, setTotal] = useState(0);
+  const [totalCostCNY, setTotalCostCNY] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [sheetRows, setSheetRows] = useState(1000000);
@@ -94,11 +95,13 @@ export default function Requests() {
     try {
       const res = await fetchRequestLogs({
         ...buildQueryParams(),
+        use_cache_price: useCachePrice,
         page: targetPage,
         page_size: targetPageSize,
       });
       setLogs(res.data ?? []);
       setTotal(res.total);
+      setTotalCostCNY(res.total_cost_cny ?? 0);
     } catch (e: unknown) {
       message.error('查询失败: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -164,6 +167,8 @@ export default function Requests() {
       title: '状态码', dataIndex: 'status_code', key: 'status_code', width: 90,
       render: (v: number) => v === 200 ? <Tag color="green">{v}</Tag> : <Tag color="red">{v}</Tag>,
     } as ColumnsType<RequestLog>[number]] : []),
+    { title: '费用 (CNY)', dataIndex: 'cost_cny', key: 'cost_cny', align: 'right', width: 120,
+      render: (v: number) => v > 0 ? <Tag color="blue">¥{v.toFixed(4)}</Tag> : <Text type="secondary">-</Text> },
   ];
 
   return (
@@ -301,6 +306,17 @@ export default function Requests() {
 
       {/* Data table */}
       <Card>
+        <div style={{ marginBottom: 12 }}>
+          <Space size="large" align="center">
+            <Text strong>总费用（人民币）：</Text>
+            {totalCostCNY > 0
+              ? <Tag color="blue" style={{ fontSize: 14 }}>¥{totalCostCNY.toFixed(4)}</Tag>
+              : <Text type="secondary">未配置价格</Text>}
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              （当前筛选条件下全部匹配请求的费用合计）
+            </Text>
+          </Space>
+        </div>
         <Table<RequestLog>
           dataSource={logs}
           columns={columns}

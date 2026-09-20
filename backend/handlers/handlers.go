@@ -200,11 +200,31 @@ func getRequests(c *gin.Context, cfg *config.Config) {
 		return
 	}
 
+	// Enrich each request with its CNY cost using the price config.
+	useCachePrice := c.Query("use_cache_price") == "1"
+	pc, _ := pricing.Load(cfg.DataDir)
+	for i := range logs {
+		entry := pricing.FindEntry(pc, logs[i].ModelName)
+		costUSD := pricing.CalcCost(entry, pc.USDToCNY, logs[i].PromptTokens, logs[i].CompletionTokens, logs[i].CacheTokens, useCachePrice)
+		logs[i].CostCNY = costUSD * pc.USDToCNY
+	}
+
+	// Total cost across ALL matching requests (not just the current page),
+	// computed from per-model aggregated usage so it stays cheap.
+	totalCostCNY := 0.0
+	if stats, err := db.GetSummary(p); err == nil {
+		for _, s := range stats {
+			entry := pricing.FindEntry(pc, s.ModelName)
+			totalCostCNY += pricing.CalcCost(entry, pc.USDToCNY, s.PromptTokens, s.CompletionTokens, s.CacheTokens, useCachePrice) * pc.USDToCNY
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"data":      logs,
-		"total":     total,
-		"page":      page,
-		"page_size": pageSize,
+		"data":           logs,
+		"total":          total,
+		"page":           page,
+		"page_size":      pageSize,
+		"total_cost_cny": math.Round(totalCostCNY*10000) / 10000,
 	})
 }
 
@@ -218,8 +238,6 @@ const (
 	maxDataRowsPerSheet = 1_000_000
 	minDataRowsPerSheet = 10_000
 )
-
-var requestSheetHeaders = []string{"时间", "Key名称", "模型", "耗时(秒)", "流式", "TTFT(ms)", "输入Tokens", "缓存命中Tokens", "输出Tokens", "总Tokens", "状态码"}
 
 // requestExportOptions carries the user-configurable options of the
 // per-request detail export.
@@ -288,7 +306,7 @@ func exportRequestsExcel(c *gin.Context, cfg *config.Config) {
 		return
 	}
 
-	usage, err := writeRequestSheets(f, p, timeRange, opts)
+	usage, err := writeRequestSheets(f, p, timeRange, opts, pc)
 	if err != nil {
 		errJSON(c, http.StatusInternalServerError, err.Error())
 		return
@@ -447,6 +465,63 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 			return err
 		}
 		sw.MergeCell(cell, lastCol+strconv.Itoa(row))
+		row++
+	}
+
+	// Cost calculation formula note.
+	row++ // blank row
+	cell, _ = excelize.CoordinatesToCellName(1, row)
+	if err := sw.SetRow(cell, []interface{}{
+		excelize.Cell{StyleID: dataStyle, Value: "费用计算公式：费用 = (非缓存 token 数 × 输入价格 + 缓存 token 数 × 缓存价格 + 补全 token 数 × 输出价格) / 1,000,000（价格单位：元 / 百万 tokens）"},
+	}); err != nil {
+		return err
+	}
+	sw.MergeCell(cell, lastCol+strconv.Itoa(row))
+	row++
+
+	// Model billing prices table (CNY per million tokens).
+	priceHeaders := []string{"模型", "输入价格(元/百万 tokens)", "缓存价格(元/百万 tokens)", "输出价格(元/百万 tokens)"}
+	priceHeaderCells := make([]interface{}, len(priceHeaders))
+	for i, h := range priceHeaders {
+		priceHeaderCells[i] = excelize.Cell{StyleID: headerStyle, Value: h}
+	}
+	cell, _ = excelize.CoordinatesToCellName(1, row)
+	if err := sw.SetRow(cell, priceHeaderCells); err != nil {
+		return err
+	}
+	row++
+	for _, m := range models {
+		entry := pricing.FindEntry(pc, m)
+		var inCNY, cacheCNY, outCNY float64
+		if entry != nil {
+			inCNY = pricing.ToCNY(entry.InputPrice, entry.Currency, pc.USDToCNY)
+			cacheCNY = pricing.ToCNY(entry.CachePrice, entry.Currency, pc.USDToCNY)
+			outCNY = pricing.ToCNY(entry.OutputPrice, entry.Currency, pc.USDToCNY)
+		}
+		priceCells := []interface{}{
+			m,
+			math.Round(inCNY*10000) / 10000,
+			math.Round(cacheCNY*10000) / 10000,
+			math.Round(outCNY*10000) / 10000,
+		}
+		pc2 := make([]interface{}, len(priceCells))
+		for i, v := range priceCells {
+			styleID := dataStyle
+			if opts.thousandSep {
+				switch v.(type) {
+				case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+					styleID = intNumStyle
+				case float32, float64:
+					styleID = costNumStyle
+				}
+			}
+			pc2[i] = excelize.Cell{StyleID: styleID, Value: v}
+		}
+		cell, _ = excelize.CoordinatesToCellName(1, row)
+		if err := sw.SetRow(cell, pc2); err != nil {
+			return err
+		}
+		row++
 	}
 	return nil
 }
@@ -458,7 +533,7 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 // When opts.thousandSep is true, numeric cells get a comma-grouped number
 // format; when opts.hideStatusCode is true, the status-code column is
 // omitted.
-func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, opts requestExportOptions) (map[string]*modelUsage, error) {
+func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, opts requestExportOptions, pc *models.PriceConfig) (map[string]*modelUsage, error) {
 	usage := map[string]*modelUsage{}
 	getUsage := func(model string) *modelUsage {
 		u, ok := usage[model]
@@ -469,10 +544,11 @@ func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, op
 		return u
 	}
 
-	headers := requestSheetHeaders
-	if opts.hideStatusCode {
-		headers = headers[:len(headers)-1]
+	headers := []string{"时间", "Key名称", "模型", "耗时(秒)", "流式", "TTFT(ms)", "输入Tokens", "缓存命中Tokens", "输出Tokens", "总Tokens"}
+	if !opts.hideStatusCode {
+		headers = append(headers, "状态码")
 	}
+	headers = append(headers, "费用(CNY)")
 
 	border := []excelize.Border{{Type: "left", Color: "000000", Style: 1}, {Type: "top", Color: "000000", Style: 1}, {Type: "right", Color: "000000", Style: 1}, {Type: "bottom", Color: "000000", Style: 1}}
 	headerStyle, _ := f.NewStyle(&excelize.Style{
@@ -483,11 +559,17 @@ func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, op
 		Border: border,
 	})
 	dataNumStyle := dataStyle
+	costNumStyle := dataStyle
 	if opts.thousandSep {
 		numFmt := "#,##0"
 		dataNumStyle, _ = f.NewStyle(&excelize.Style{
 			Border:       border,
 			CustomNumFmt: &numFmt,
+		})
+		costFmt := "#,##0.0000"
+		costNumStyle, _ = f.NewStyle(&excelize.Style{
+			Border:       border,
+			CustomNumFmt: &costFmt,
 		})
 	}
 
@@ -544,21 +626,29 @@ func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, op
 				}
 			}
 			sheetRow++
+			entry := pricing.FindEntry(pc, l.ModelName)
+			costCNY := 0.0
+			if entry != nil {
+				costCNY = pricing.CalcCost(entry, pc.USDToCNY, l.PromptTokens, l.CompletionTokens, l.CacheTokens, opts.useCachePrice) * pc.USDToCNY
+			}
 			vals := []interface{}{
 				l.CreatedAt, l.TokenName, l.ModelName, l.UseTime,
 				streamLabel(l.IsStream), ttftValue(l),
-				l.PromptTokens, l.CacheTokens, l.CompletionTokens, l.TotalTokens, l.StatusCode,
+				l.PromptTokens, l.CacheTokens, l.CompletionTokens, l.TotalTokens,
 			}
-			if opts.hideStatusCode {
-				vals = vals[:len(vals)-1]
+			if !opts.hideStatusCode {
+				vals = append(vals, l.StatusCode)
 			}
+			vals = append(vals, math.Round(costCNY*10000)/10000)
 			cells := make([]interface{}, len(vals))
 			for i, v := range vals {
 				styleID := dataStyle
 				if opts.thousandSep {
 					switch v.(type) {
-					case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+					case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 						styleID = dataNumStyle
+					case float32, float64:
+						styleID = costNumStyle
 					}
 				}
 				cells[i] = excelize.Cell{StyleID: styleID, Value: v}

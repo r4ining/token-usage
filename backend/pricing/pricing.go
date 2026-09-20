@@ -149,6 +149,15 @@ func toUSD(price float64, currency string, usdToCNY float64) float64 {
 	return price
 }
 
+// ToCNY converts a price to CNY. If the entry's currency is USD (or empty),
+// multiplies by usdToCNY; CNY prices are returned as-is.
+func ToCNY(price float64, currency string, usdToCNY float64) float64 {
+	if strings.EqualFold(currency, "CNY") || usdToCNY == 0 {
+		return price
+	}
+	return price * usdToCNY
+}
+
 // CalcCost computes USD cost for a model stat row.
 // Returns 0 if no price entry found.
 // Prices in the entry are normalised to USD via entry.Currency and usdToCNY before use.
