@@ -32,6 +32,8 @@ func Register(r *gin.Engine, cfg *config.Config) {
 	api.GET("/export/requests", func(c *gin.Context) { exportRequestsExcel(c, cfg) })
 	api.GET("/prices", func(c *gin.Context) { getPrices(c, cfg) })
 	api.POST("/prices", func(c *gin.Context) { savePrices(c, cfg) })
+	api.GET("/datasource", getDataSource)
+	api.POST("/datasource", setDataSource)
 }
 
 // --- helpers ---
@@ -357,6 +359,11 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 	dataStyle, _ := f.NewStyle(&excelize.Style{
 		Border: border,
 	})
+	// Separator rows keep the horizontal rules but omit the vertical ones so
+	// empty rows read as a gap rather than a bordered band.
+	sepStyle, _ := f.NewStyle(&excelize.Style{
+		Border: []excelize.Border{{Type: "top", Color: "000000", Style: 1}, {Type: "bottom", Color: "000000", Style: 1}},
+	})
 	intNumStyle, costNumStyle := dataStyle, dataStyle
 	if opts.thousandSep {
 		intFmt := "#,##0"
@@ -404,20 +411,55 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 		modelsLabel = strings.Join(p.ModelNames, "、")
 	}
 
-	headers := []string{"Key名称", "模型", "请求数量", "输入 Tokens", "缓存命中 Tokens", "输出 Tokens", "总 Tokens", "费用 (USD)", "费用 (CNY)"}
-	lastCol, _ := excelize.ColumnNumberToName(len(headers))
+	headers := []string{"Key名称", "模型", "请求数量", "输入 Tokens", "缓存命中 Tokens", "输出 Tokens", "总 Tokens", "费用 (CNY)"}
+	priceHeaders := []string{"模型", "输入价格(元/百万 tokens)", "缓存价格(元/百万 tokens)", "输出价格(元/百万 tokens)"}
+
+	// The time-range and formula notes are merged across the widest row in
+	// this sheet (the metric header row here).
+	cols := len(headers)
+	if len(priceHeaders) > cols {
+		cols = len(priceHeaders)
+	}
+	lastCol, _ := excelize.ColumnNumberToName(cols)
 
 	// Widen columns so large token counts stay readable.
-	if err := sw.SetColWidth(1, len(headers), 18); err != nil {
+	if err := sw.SetColWidth(1, cols, 18); err != nil {
 		return err
 	}
 
-	// Time range row (merged across all columns).
-	cell, _ := excelize.CoordinatesToCellName(1, 1)
-	if err := sw.SetRow(cell, []interface{}{excelize.Cell{StyleID: dataStyle, Value: "查询时间区间：" + timeRange}}); err != nil {
+	var cell string
+
+	// writeMergedRow writes a value merged across the full sheet width so
+	// notes always span the widest row and carry borders edge to edge. Every
+	// cell in the merged range gets the style, otherwise Excel leaves the
+	// right/bottom edges of the merged range unbordered.
+	writeMergedRow := func(row int, value interface{}, styleID int) error {
+		cells := make([]interface{}, cols)
+		for i := range cells {
+			cells[i] = excelize.Cell{StyleID: styleID, Value: ""}
+		}
+		cells[0] = excelize.Cell{StyleID: styleID, Value: value}
+		ref, _ := excelize.CoordinatesToCellName(1, row)
+		if err := sw.SetRow(ref, cells); err != nil {
+			return err
+		}
+		return sw.MergeCell(ref, lastCol+strconv.Itoa(row))
+	}
+	// writeBlankRow writes an empty separator row spanning `width` columns:
+	// horizontal borders only, matching the width of the block below it.
+	writeBlankRow := func(row, width int) error {
+		cells := make([]interface{}, width)
+		for i := range cells {
+			cells[i] = excelize.Cell{StyleID: sepStyle, Value: ""}
+		}
+		ref, _ := excelize.CoordinatesToCellName(1, row)
+		return sw.SetRow(ref, cells)
+	}
+
+	// Time range row (merged across the widest row of the sheet).
+	if err := writeMergedRow(1, "查询时间区间："+timeRange, dataStyle); err != nil {
 		return err
 	}
-	sw.MergeCell(cell, lastCol+"1")
 
 	// Header row: Key/model filters first, then one column per metric.
 	headerCells := make([]interface{}, len(headers))
@@ -435,7 +477,7 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 	values := []interface{}{
 		keysLabel, modelsLabel,
 		requests, prompt, cache, completion, prompt + completion,
-		math.Round(costUSD*10000) / 10000, math.Round(costCNY*10000) / 10000,
+		math.Round(costCNY*10000) / 10000,
 	}
 	valueCells := make([]interface{}, len(values))
 	for i, v := range values {
@@ -458,29 +500,29 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 
 	// Optional note about models without a configured price.
 	if len(unpriced) > 0 {
-		cell, _ = excelize.CoordinatesToCellName(1, row)
-		if err := sw.SetRow(cell, []interface{}{
-			excelize.Cell{StyleID: dataStyle, Value: "未配置价格的模型（未计入费用）：" + strings.Join(unpriced, "、")},
-		}); err != nil {
+		if err := writeMergedRow(row, "未配置价格的模型（未计入费用）："+strings.Join(unpriced, "、"), dataStyle); err != nil {
 			return err
 		}
-		sw.MergeCell(cell, lastCol+strconv.Itoa(row))
 		row++
 	}
 
-	// Cost calculation formula note.
-	row++ // blank row
-	cell, _ = excelize.CoordinatesToCellName(1, row)
-	if err := sw.SetRow(cell, []interface{}{
-		excelize.Cell{StyleID: dataStyle, Value: "费用计算公式：费用 = (非缓存 token 数 × 输入价格 + 缓存 token 数 × 缓存价格 + 补全 token 数 × 输出价格) / 1,000,000（价格单位：元 / 百万 tokens）"},
-	}); err != nil {
+	// Cost calculation formula, surrounded by bordered blank rows so it is
+	// visually separated from the totals above and the price table below.
+	// The separator under the formula is only as wide as the price table.
+	if err := writeBlankRow(row, cols); err != nil {
 		return err
 	}
-	sw.MergeCell(cell, lastCol+strconv.Itoa(row))
+	row++
+	if err := writeMergedRow(row, "费用计算公式：费用 = (非缓存 token 数 × 输入价格 + 缓存 token 数 × 缓存价格 + 补全 token 数 × 输出价格) / 1,000,000（价格单位：元 / 百万 tokens）", dataStyle); err != nil {
+		return err
+	}
+	row++
+	if err := writeBlankRow(row, len(priceHeaders)); err != nil {
+		return err
+	}
 	row++
 
 	// Model billing prices table (CNY per million tokens).
-	priceHeaders := []string{"模型", "输入价格(元/百万 tokens)", "缓存价格(元/百万 tokens)", "输出价格(元/百万 tokens)"}
 	priceHeaderCells := make([]interface{}, len(priceHeaders))
 	for i, h := range priceHeaders {
 		priceHeaderCells[i] = excelize.Cell{StyleID: headerStyle, Value: h}
@@ -523,7 +565,10 @@ func writeRequestSummarySheet(f *excelize.File, p db.QueryParams, usage map[stri
 		}
 		row++
 	}
-	return nil
+
+	// Flush is required: without it the streamed sheet is never finalized and
+	// would be emitted empty (losing all cells and merged ranges).
+	return sw.Flush()
 }
 
 // writeRequestSheets streams all matching request records into the workbook
@@ -580,10 +625,7 @@ func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, op
 
 	newSheet := func() error {
 		sheetCount++
-		name := "请求明细"
-		if sheetCount > 1 {
-			name = fmt.Sprintf("请求明细%d", sheetCount)
-		}
+		name := fmt.Sprintf("请求明细%d", sheetCount)
 		if _, err := f.NewSheet(name); err != nil {
 			return err
 		}
@@ -593,12 +635,21 @@ func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, op
 			return err
 		}
 		lastCol, _ := excelize.ColumnNumberToName(len(headers))
-		if err := sw.SetRow("A1", []interface{}{
-			excelize.Cell{StyleID: headerStyle, Value: "查询时间区间：" + timeRange},
-		}); err != nil {
+		// Style every cell of the merged time-range row; a style on the
+		// top-left cell alone leaves the merged range's right/bottom edges
+		// without borders.
+		timeCells := make([]interface{}, len(headers))
+		for i := range timeCells {
+			timeCells[i] = excelize.Cell{StyleID: headerStyle, Value: ""}
+		}
+		timeCells[0] = excelize.Cell{StyleID: headerStyle, Value: "查询时间区间：" + timeRange}
+		if err := sw.SetRow("A1", timeCells); err != nil {
 			return err
 		}
-		sw.MergeCell("A1", lastCol+"1")
+		// Merge the time range across the full width of the sheet.
+		if err := sw.MergeCell("A1", lastCol+"1"); err != nil {
+			return err
+		}
 		headerCells := make([]interface{}, len(headers))
 		for i, h := range headers {
 			headerCells[i] = excelize.Cell{StyleID: headerStyle, Value: h}
@@ -667,7 +718,17 @@ func writeRequestSheets(f *excelize.File, p db.QueryParams, timeRange string, op
 		}
 		return nil
 	})
-	return usage, err
+	if err != nil {
+		return usage, err
+	}
+	// Flush the last detail sheet; sheets are otherwise only flushed when a
+	// new one is started, which would leave the final sheet empty.
+	if sw != nil {
+		if err := sw.Flush(); err != nil {
+			return usage, err
+		}
+	}
+	return usage, nil
 }
 
 func exportAbnormalExcel(c *gin.Context, cfg *config.Config) {
@@ -698,6 +759,27 @@ func exportAbnormalExcel(c *gin.Context, cfg *config.Config) {
 	c.Header("Content-Disposition", "attachment; filename="+filename)
 	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	c.Data(http.StatusOK, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buf.Bytes())
+}
+
+// getDataSource returns the active log data source and the available options.
+func getDataSource(c *gin.Context) {
+	c.JSON(http.StatusOK, db.GetDataSourceInfo())
+}
+
+// setDataSource switches the active log data source at runtime.
+func setDataSource(c *gin.Context) {
+	var body struct {
+		Source string `json:"source"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		errJSON(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := db.SetLogSource(body.Source); err != nil {
+		errJSON(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, db.GetDataSourceInfo())
 }
 
 func getPrices(c *gin.Context, cfg *config.Config) {

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AbnormalLog, DailyCost, PriceConfig, RequestLogsResponse, SummaryResponse } from './types';
+import { AbnormalLog, DailyCost, DataSourceInfo, PriceConfig, RequestLogsResponse, SummaryResponse } from './types';
 
 const BASE = '';
 
@@ -76,6 +76,16 @@ export async function fetchPrices(): Promise<PriceConfig> {
 
 export async function savePrices(cfg: PriceConfig): Promise<void> {
   await axios.post(`${BASE}/api/prices`, cfg);
+}
+
+export async function fetchDataSource(): Promise<DataSourceInfo> {
+  const res = await axios.get(`${BASE}/api/datasource`);
+  return res.data;
+}
+
+export async function setDataSource(source: string): Promise<DataSourceInfo> {
+  const res = await axios.post(`${BASE}/api/datasource`, { source });
+  return res.data;
 }
 
 export function buildExportUrl(p: QueryParams): string {

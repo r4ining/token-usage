@@ -96,3 +96,14 @@ export interface PriceConfig {
   entries: PriceEntry[];
   usd_to_cny: number;
 }
+
+export interface DataSourceOption {
+  key: string;
+  label: string;
+}
+
+export interface DataSourceInfo {
+  current: string;
+  default: string;
+  options: DataSourceOption[];
+}

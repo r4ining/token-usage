@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wangshihong/token-usage/config"
@@ -15,16 +16,83 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// DB is the primary MySQL connection. It always holds the tables other than
+// `logs` (e.g. `tokens`, `channels`).
 var DB *gorm.DB
 
-// LogDB is the connection used to read the `logs` table. It points to the
-// standalone PostgreSQL database when LOG_SQL_DSN is configured, otherwise it
-// falls back to the same MySQL connection as DB.
-var LogDB *gorm.DB
+// logSource is a connection to the database that holds the `logs` table,
+// together with the SQL dialect it speaks. The application may hold more than
+// one (MySQL and the standalone LOG_SQL_DSN database) and switch the active
+// one at runtime.
+type logSource struct {
+	db      *gorm.DB
+	dialect string // "mysql" or "postgres"
+}
 
-// logDialect records the SQL dialect used by LogDB ("mysql" or "postgres"),
-// so dialect-specific SQL fragments can be generated.
-var logDialect string
+// Data source keys.
+const (
+	SourceMySQL  = "mysql"
+	SourceLogSQL = "log_sql"
+)
+
+var dataSourceLabels = map[string]string{
+	SourceMySQL:  "MySQL",
+	SourceLogSQL: "LOG_SQL_DSN 日志库",
+}
+
+var (
+	srcMu      sync.RWMutex
+	logSources = map[string]logSource{}
+	currentSrc string
+	defaultSrc string
+)
+
+// DataSourceOption is a selectable log data source.
+type DataSourceOption struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// DataSourceInfo describes the currently active log data source and the
+// available alternatives.
+type DataSourceInfo struct {
+	Current string             `json:"current"`
+	Default string             `json:"default"`
+	Options []DataSourceOption `json:"options"`
+}
+
+// currentLogSource returns a snapshot of the active log data source. Each
+// query captures it once so that a concurrent switch cannot mix dialects
+// mid-query.
+func currentLogSource() logSource {
+	srcMu.RLock()
+	defer srcMu.RUnlock()
+	return logSources[currentSrc]
+}
+
+// GetDataSourceInfo returns the active, default and available log data sources.
+func GetDataSourceInfo() DataSourceInfo {
+	srcMu.RLock()
+	defer srcMu.RUnlock()
+	options := make([]DataSourceOption, 0, len(logSources))
+	for _, key := range []string{SourceLogSQL, SourceMySQL} {
+		if _, ok := logSources[key]; ok {
+			options = append(options, DataSourceOption{Key: key, Label: dataSourceLabels[key]})
+		}
+	}
+	return DataSourceInfo{Current: currentSrc, Default: defaultSrc, Options: options}
+}
+
+// SetLogSource switches the active log data source.
+func SetLogSource(key string) error {
+	srcMu.Lock()
+	defer srcMu.Unlock()
+	if _, ok := logSources[key]; !ok {
+		return fmt.Errorf("unknown data source: %s", key)
+	}
+	currentSrc = key
+	return nil
+}
 
 // withPGTimeZone appends a session TimeZone setting to a PostgreSQL DSN so
 // that timestamp rendering (to_timestamp/to_char/DATE) matches the
@@ -61,27 +129,37 @@ func Init(cfg *config.Config) error {
 	sqlDB.SetMaxOpenConns(50)
 	sqlDB.SetConnMaxLifetime(time.Minute * 5)
 
-	// logs table: use a standalone PostgreSQL connection when LOG_SQL_DSN is
-	// configured, otherwise reuse the MySQL connection.
+	// logs table: the MySQL connection is always available as a source. When
+	// LOG_SQL_DSN is configured, a standalone PostgreSQL connection is opened
+	// too and becomes the default source, but the user may switch back to
+	// MySQL at runtime.
+	sources := map[string]logSource{
+		SourceMySQL: {db: DB, dialect: "mysql"},
+	}
+	defaultKey := SourceMySQL
 	if cfg.LogSQLDSN != "" {
-		LogDB, err = gorm.Open(postgres.Open(withPGTimeZone(cfg.LogSQLDSN)), &gorm.Config{
+		pg, err := gorm.Open(postgres.Open(withPGTimeZone(cfg.LogSQLDSN)), &gorm.Config{
 			Logger: logger.Default.LogMode(logger.Warn),
 		})
 		if err != nil {
 			return fmt.Errorf("failed to connect to log database: %w", err)
 		}
-		logSQLDB, err := LogDB.DB()
+		logSQLDB, err := pg.DB()
 		if err != nil {
 			return err
 		}
 		logSQLDB.SetMaxIdleConns(10)
 		logSQLDB.SetMaxOpenConns(50)
 		logSQLDB.SetConnMaxLifetime(time.Minute * 5)
-		logDialect = "postgres"
-	} else {
-		LogDB = DB
-		logDialect = "mysql"
+		sources[SourceLogSQL] = logSource{db: pg, dialect: "postgres"}
+		defaultKey = SourceLogSQL
 	}
+
+	srcMu.Lock()
+	logSources = sources
+	defaultSrc = defaultKey
+	currentSrc = defaultKey
+	srcMu.Unlock()
 	return nil
 }
 
@@ -98,12 +176,14 @@ type QueryParams struct {
 // --- dialect helpers ---
 //
 // The logs table may live in MySQL or PostgreSQL. The following helpers
-// translate the few SQL fragments that differ between the two dialects.
+// translate the few SQL fragments that differ between the two dialects. They
+// are methods on logSource so a query always uses the dialect of the source
+// it was captured from.
 
 // dateFromUnixtime returns an expression yielding the calendar date (YYYY-MM-DD)
 // for a unix-timestamp column.
-func dateFromUnixtime(col string) string {
-	if logDialect == "postgres" {
+func (s logSource) dateFromUnixtime(col string) string {
+	if s.dialect == "postgres" {
 		return "DATE(to_timestamp(" + col + ")) AS date"
 	}
 	return "DATE(FROM_UNIXTIME(" + col + ")) AS date"
@@ -111,8 +191,8 @@ func dateFromUnixtime(col string) string {
 
 // dateTimeFromUnixtime returns an expression yielding a formatted timestamp
 // string "YYYY-MM-DD HH:MM:SS" for a unix-timestamp column.
-func dateTimeFromUnixtime(col string) string {
-	if logDialect == "postgres" {
+func (s logSource) dateTimeFromUnixtime(col string) string {
+	if s.dialect == "postgres" {
 		return "to_char(to_timestamp(" + col + "), 'YYYY-MM-DD HH24:MI:SS') AS created_at_str"
 	}
 	return "DATE_FORMAT(FROM_UNIXTIME(" + col + "), '%Y-%m-%d %H:%i:%s') AS created_at_str"
@@ -121,8 +201,8 @@ func dateTimeFromUnixtime(col string) string {
 // jsonExtractText returns the text value at the given JSON path of a column.
 // `path` uses MySQL JSON path syntax (e.g. "$.stream_status"); it is converted
 // to the equivalent PostgreSQL `->>` accessor.
-func jsonExtractText(col, path string) string {
-	if logDialect == "postgres" {
+func (s logSource) jsonExtractText(col, path string) string {
+	if s.dialect == "postgres" {
 		// path looks like "$.a.b" -> convert to "'a','b' ..." for #>> operator,
 		// or simply the last key for ->> when single-level.
 		key := strings.TrimPrefix(path, "$.")
@@ -134,8 +214,8 @@ func jsonExtractText(col, path string) string {
 
 // isStreamTrue returns the SQL condition matching a streaming request.
 // PostgreSQL stores is_stream as a boolean; MySQL stores it as tinyint(1).
-func isStreamTrue() string {
-	if logDialect == "postgres" {
+func (s logSource) isStreamTrue() string {
+	if s.dialect == "postgres" {
 		return "is_stream = true"
 	}
 	return "is_stream = 1"
@@ -183,7 +263,7 @@ func GetAllModelNames() ([]string, error) {
 
 // GetSummary returns aggregated stats grouped by token_name + model_name.
 func GetSummary(p QueryParams) ([]models.ModelStat, error) {
-	tx := buildBaseQuery(p)
+	tx := currentLogSource().buildBaseQuery(p)
 
 	type row struct {
 		TokenName        string  `gorm:"column:token_name"`
@@ -230,7 +310,8 @@ func GetSummary(p QueryParams) ([]models.ModelStat, error) {
 
 // GetDailyStats returns aggregated stats grouped by date + token_name + model_name.
 func GetDailyStats(p QueryParams) ([]models.DailyStat, error) {
-	tx := buildBaseQuery(p)
+	s := currentLogSource()
+	tx := s.buildBaseQuery(p)
 
 	type row struct {
 		Date             string  `gorm:"column:date"`
@@ -245,7 +326,7 @@ func GetDailyStats(p QueryParams) ([]models.DailyStat, error) {
 
 	var rows []row
 	err := tx.Select(
-		dateFromUnixtime("created_at") + ", " +
+		s.dateFromUnixtime("created_at") + ", " +
 			"token_name, " +
 			"model_name, " +
 			"SUM(prompt_tokens) AS prompt_tokens, " +
@@ -310,14 +391,14 @@ func applyCommonFilters(tx *gorm.DB, p QueryParams) *gorm.DB {
 
 // abnormalCondition is the SQL condition identifying an abnormal request:
 // a streaming request whose first-response-time (frt) is negative.
-func abnormalCondition() string {
-	return isStreamTrue() + " AND frt < 0"
+func (s logSource) abnormalCondition() string {
+	return s.isStreamTrue() + " AND frt < 0"
 }
 
-func buildBaseQuery(p QueryParams) *gorm.DB {
-	tx := applyCommonFilters(LogDB.Table(p.TableName).Where("type = 2"), p)
+func (s logSource) buildBaseQuery(p QueryParams) *gorm.DB {
+	tx := applyCommonFilters(s.db.Table(p.TableName).Where("type = 2"), p)
 	if p.ExcludeAbnormal {
-		tx = tx.Where("NOT (" + abnormalCondition() + ")")
+		tx = tx.Where("NOT (" + s.abnormalCondition() + ")")
 	}
 	return tx
 }
@@ -325,8 +406,9 @@ func buildBaseQuery(p QueryParams) *gorm.DB {
 // GetAbnormalLogs returns individual abnormal request records (streaming
 // requests with frt < 0) matching the given filters.
 func GetAbnormalLogs(p QueryParams) ([]models.AbnormalLog, error) {
-	tx := applyCommonFilters(LogDB.Table(p.TableName).Where("type = 2"), p).
-		Where(abnormalCondition())
+	s := currentLogSource()
+	tx := applyCommonFilters(s.db.Table(p.TableName).Where("type = 2"), p).
+		Where(s.abnormalCondition())
 
 	type row struct {
 		TokenName        string `gorm:"column:token_name"`
@@ -347,8 +429,8 @@ func GetAbnormalLogs(p QueryParams) ([]models.AbnormalLog, error) {
 			"completion_tokens, " +
 			"cache_tokens, " +
 			"quota, " +
-			dateTimeFromUnixtime("created_at") + ", " +
-			"COALESCE(" + jsonExtractText("other", "$.stream_status") + ", '') AS error_reason",
+			s.dateTimeFromUnixtime("created_at") + ", " +
+			"COALESCE(" + s.jsonExtractText("other", "$.stream_status") + ", '') AS error_reason",
 	).Order("created_at DESC").Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -389,10 +471,10 @@ type requestLogRow struct {
 }
 
 // requestLogSelect is the shared select list for per-request detail queries.
-func requestLogSelect() string {
+func (s logSource) requestLogSelect() string {
 	return "token_name, " +
 		"model_name, " +
-		dateTimeFromUnixtime("created_at") + ", " +
+		s.dateTimeFromUnixtime("created_at") + ", " +
 		"use_time, " +
 		"is_stream, " +
 		"frt, " +
@@ -422,16 +504,17 @@ func requestLogFromRow(r requestLogRow) models.RequestLog {
 // matching the given filters.
 func CountRequestLogs(p QueryParams) (int64, error) {
 	var n int64
-	err := buildBaseQuery(p).Count(&n).Error
+	err := currentLogSource().buildBaseQuery(p).Count(&n).Error
 	return n, err
 }
 
 // GetRequestLogs returns individual request records (newest first)
 // matching the given filters, paginated.
 func GetRequestLogs(p QueryParams, offset, limit int) ([]models.RequestLog, error) {
+	s := currentLogSource()
 	var rows []requestLogRow
-	err := buildBaseQuery(p).
-		Select(requestLogSelect()).
+	err := s.buildBaseQuery(p).
+		Select(s.requestLogSelect()).
 		Order("created_at DESC, id DESC").
 		Limit(limit).
 		Offset(offset).
@@ -451,8 +534,9 @@ func GetRequestLogs(p QueryParams, offset, limit int) ([]models.RequestLog, erro
 // database with a cursor so that exports of very large result sets stay
 // memory-safe.
 func StreamRequestLogs(p QueryParams, batchSize int, fn func(batch []models.RequestLog) error) error {
-	rows, err := buildBaseQuery(p).
-		Select(requestLogSelect()).
+	s := currentLogSource()
+	rows, err := s.buildBaseQuery(p).
+		Select(s.requestLogSelect()).
 		Order("created_at ASC, id ASC").
 		Rows()
 	if err != nil {
@@ -463,7 +547,7 @@ func StreamRequestLogs(p QueryParams, batchSize int, fn func(batch []models.Requ
 	batch := make([]models.RequestLog, 0, batchSize)
 	for rows.Next() {
 		var r requestLogRow
-		if err := LogDB.ScanRows(rows, &r); err != nil {
+		if err := s.db.ScanRows(rows, &r); err != nil {
 			return err
 		}
 		batch = append(batch, requestLogFromRow(r))

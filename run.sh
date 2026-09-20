@@ -22,6 +22,7 @@ DB_USER=new_api_readonly \
 DB_PASSWORD=qf55K0Qus2lUGmJLFF \
 DB_NAME=new_api \
 DATA_DIR=${SCRIPT_DIR}/data \
+LOG_SQL_DSN=postgresql://postgres:WqPoGnqJC7p82R9KEQ8zxCEJFBTphey2Gl1CLRIbQ2I7i0xDHVibKvXRKEMjARjH@10.10.251.102:32432/newapi \
 go run .
 
 # 测试

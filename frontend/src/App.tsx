@@ -5,6 +5,7 @@ import zhCN from 'antd/locale/zh_CN';
 import Dashboard from './pages/Dashboard';
 import Requests from './pages/Requests';
 import PriceConfig from './pages/PriceConfig';
+import DataSourceSelect from './components/DataSourceSelect';
 
 const { Content, Sider } = Layout;
 
@@ -24,7 +25,7 @@ function App() {
   useEffect(() => {
     // Initialize page from hash on mount
     setPage(getPageFromHash());
-    
+
     const handleHashChange = () => {
       setPage(getPageFromHash());
     };
@@ -41,23 +42,40 @@ function App() {
   return (
     <ConfigProvider locale={zhCN} theme={{ algorithm: theme.defaultAlgorithm }}>
       <Layout style={{ minHeight: '100vh' }}>
-        <Sider width={200} style={{ background: '#fff' }}>
-          <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', height: 48, background: 'linear-gradient(135deg, #1890ff 0%, #36cfc9 100%)', boxShadow: '0 2px 8px rgba(24,144,255,0.2)' }}>
-            <span style={{ color: '#fff', fontSize: 15, fontWeight: 600, letterSpacing: 0.5, whiteSpace: 'nowrap' }}>
-              Token 用量查询平台
-            </span>
+        <Sider
+          width={200}
+          style={{
+            background: '#fff',
+            // Pin the sidebar to the viewport so its footer (data source
+            // selector) stays visible on long pages.
+            position: 'sticky',
+            top: 0,
+            height: '100vh',
+            overflow: 'auto',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+            <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', height: 48, background: 'linear-gradient(135deg, #1890ff 0%, #36cfc9 100%)', boxShadow: '0 2px 8px rgba(24,144,255,0.2)' }}>
+              <span style={{ color: '#fff', fontSize: 15, fontWeight: 600, letterSpacing: 0.5, whiteSpace: 'nowrap' }}>
+                Token 用量查询平台
+              </span>
+            </div>
+            <Menu
+              mode="inline"
+              selectedKeys={[page]}
+              style={{ flex: 1, borderRight: 0, overflow: 'auto' }}
+              onClick={({ key }) => updatePage(key as PageKey)}
+              items={[
+                { key: 'dashboard', icon: <BarChartOutlined />, label: '用量统计' },
+                { key: 'requests', icon: <FieldTimeOutlined />, label: '请求明细' },
+                { key: 'prices', icon: <SettingOutlined />, label: '价格配置' },
+              ]}
+            />
+            <div style={{ padding: '12px 16px', borderTop: '1px solid #f0f0f0' }}>
+              <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 6 }}>数据源</div>
+              <DataSourceSelect size="small" showLabel={false} style={{ width: '100%' }} />
+            </div>
           </div>
-          <Menu
-            mode="inline"
-            selectedKeys={[page]}
-            style={{ height: 'calc(100% - 48px)', borderRight: 0 }}
-            onClick={({ key }) => updatePage(key as PageKey)}
-            items={[
-              { key: 'dashboard', icon: <BarChartOutlined />, label: '用量统计' },
-              { key: 'requests', icon: <FieldTimeOutlined />, label: '请求明细' },
-              { key: 'prices', icon: <SettingOutlined />, label: '价格配置' },
-            ]}
-          />
         </Sider>
         <Layout style={{ padding: '24px' }}>
           <Content style={{ background: 'transparent', minHeight: 280 }}>

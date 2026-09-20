@@ -58,6 +58,7 @@ export default function Requests() {
   const [customRange, setCustomRange] = useState<[Dayjs, Dayjs] | null>(null);
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<RequestLog[]>([]);
+  const [hasQueried, setHasQueried] = useState(false);
   const [total, setTotal] = useState(0);
   const [totalCostCNY, setTotalCostCNY] = useState(0);
   const [page, setPage] = useState(1);
@@ -102,17 +103,13 @@ export default function Requests() {
       setLogs(res.data ?? []);
       setTotal(res.total);
       setTotalCostCNY(res.total_cost_cny ?? 0);
+      setHasQueried(true);
     } catch (e: unknown) {
       message.error('查询失败: ' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setLoading(false);
     }
   }, [buildQueryParams]);
-
-  useEffect(() => {
-    void doQuery(1, 50);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const handleQuery = () => {
     setPage(1);
@@ -225,50 +222,61 @@ export default function Requests() {
             </Text>
           </Space>
 
+          {/* Row 4: Display settings (instant effect, no re-query) */}
+          <Space wrap size="middle" align="center">
+            <Text style={{ fontSize: 14, minWidth: 80 }}>
+              显示设置
+              <Tooltip title="即时生效，无需重新查询" mouseEnterDelay={0} color="rgba(0,0,0,0.78)" overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px' }}>
+                <InfoCircleOutlined style={{ marginLeft: 4, color: '#8c8c8c', cursor: 'help' }} />
+              </Tooltip>：
+            </Text>
+            <Tooltip
+              title="开启后：导出汇总中的缓存读 Tokens 按配置的缓存价格单独计费，并从输入 Tokens 中扣除（适用 OpenAI 格式，避免双重计费）；关闭后：所有输入 Tokens 统一按输入价格计算。与「用量统计」页保持一致"
+              mouseEnterDelay={0.2}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 380 }}
+            >
+              <Button
+                type={useCachePrice ? 'primary' : 'default'}
+                onClick={() => setUseCachePrice(v => !v)}
+              >
+                缓存读独立计费
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="导出的 Excel 中数值列使用千分位（英文逗号）分隔显示，如 1,821,440,552；数值仍为数字类型，可正常排序、求和"
+              mouseEnterDelay={0.2}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 380 }}
+            >
+              <Button
+                type={thousandSep ? 'primary' : 'default'}
+                onClick={() => setThousandSep(v => !v)}
+              >
+                千分位分隔
+              </Button>
+            </Tooltip>
+            <Tooltip
+              title="页面表格和导出的 Excel 中显示「状态码」列（200 以外的状态码标红）"
+              mouseEnterDelay={0.2}
+              color="rgba(0,0,0,0.78)"
+              overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 380 }}
+            >
+              <Button
+                type={showStatusCode ? 'primary' : 'default'}
+                onClick={() => setShowStatusCode(v => !v)}
+              >
+                显示状态码
+              </Button>
+            </Tooltip>
+          </Space>
+
+          {/* Row 5: Query / export actions (separated) */}
           <div style={{ marginTop: 4, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
             <Space size="middle" align="center" wrap>
               <Button type="primary" size="large" icon={<ReloadOutlined />} loading={loading} onClick={handleQuery}>
                 查询
               </Button>
-              <Tooltip
-                title="开启后：导出汇总中的缓存读 Tokens 按配置的缓存价格单独计费，并从输入 Tokens 中扣除（适用 OpenAI 格式，避免双重计费）；关闭后：所有输入 Tokens 统一按输入价格计算。与「用量统计」页保持一致"
-                mouseEnterDelay={0.2}
-                color="rgba(0,0,0,0.78)"
-                overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 380 }}
-              >
-                <Button
-                  type={useCachePrice ? 'primary' : 'default'}
-                  onClick={() => setUseCachePrice(v => !v)}
-                >
-                  缓存读独立计费
-                </Button>
-              </Tooltip>
-              <Tooltip
-                title="导出的 Excel 中数值列使用千分位（英文逗号）分隔显示，如 1,821,440,552；数值仍为数字类型，可正常排序、求和"
-                mouseEnterDelay={0.2}
-                color="rgba(0,0,0,0.78)"
-                overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 380 }}
-              >
-                <Button
-                  type={thousandSep ? 'primary' : 'default'}
-                  onClick={() => setThousandSep(v => !v)}
-                >
-                  千分位分隔
-                </Button>
-              </Tooltip>
-              <Tooltip
-                title="页面表格和导出的 Excel 中显示「状态码」列（200 以外的状态码标红）"
-                mouseEnterDelay={0.2}
-                color="rgba(0,0,0,0.78)"
-                overlayInnerStyle={{ borderRadius: 6, fontSize: 13, padding: '8px 12px', maxWidth: 380 }}
-              >
-                <Button
-                  type={showStatusCode ? 'primary' : 'default'}
-                  onClick={() => setShowStatusCode(v => !v)}
-                >
-                  显示状态码
-                </Button>
-              </Tooltip>
               <Text style={{ fontSize: 14 }}>每Sheet行数：</Text>
               <Tooltip
                 title="导出时每个 Sheet 的最大数据行数；数据量超过该值时自动分成多个 Sheet（Excel 单表硬上限约 104 万行）"
@@ -306,17 +314,19 @@ export default function Requests() {
 
       {/* Data table */}
       <Card>
-        <div style={{ marginBottom: 12 }}>
-          <Space size="large" align="center">
-            <Text strong>总费用（人民币）：</Text>
-            {totalCostCNY > 0
-              ? <Tag color="blue" style={{ fontSize: 14 }}>¥{totalCostCNY.toFixed(4)}</Tag>
-              : <Text type="secondary">未配置价格</Text>}
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              （当前筛选条件下全部匹配请求的费用合计）
-            </Text>
-          </Space>
-        </div>
+        {hasQueried && (
+          <div style={{ marginBottom: 12 }}>
+            <Space size="large" align="center">
+              <Text strong>总费用（人民币）：</Text>
+              {totalCostCNY > 0
+                ? <Tag color="blue" style={{ fontSize: 14 }}>¥{totalCostCNY.toFixed(4)}</Tag>
+                : <Text type="secondary">未配置价格</Text>}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                （当前筛选条件下全部匹配请求的费用合计）
+              </Text>
+            </Space>
+          </div>
+        )}
         <Table<RequestLog>
           dataSource={logs}
           columns={columns}
@@ -324,14 +334,15 @@ export default function Requests() {
           size="small"
           scroll={{ x: 'max-content' }}
           loading={loading}
-          pagination={{
+          locale={{ emptyText: hasQueried ? '暂无数据' : '请设置筛选条件后点击「查询」' }}
+          pagination={hasQueried ? {
             current: page,
             pageSize,
             total,
             showSizeChanger: true,
             showTotal: t => `共 ${t.toLocaleString()} 条`,
             onChange: handleTableChange,
-          }}
+          } : false}
         />
       </Card>
     </Space>

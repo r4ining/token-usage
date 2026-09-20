@@ -12,6 +12,7 @@
 - **价格配置**：自定义模型单价（支持 USD/CNY 切换、模型别名映射、汇率设置）
 - **缓存读计费**：支持缓存命中 token 按独立价格计费（避免与输入 token 双重计费）
 - **导出 Excel**：含「模型汇总」和「每日明细」两个 Sheet，带小计/合计行；请求明细导出为独立 Sheet，超过单表行数上限时自动分表
+- **数据源切换**：当 `LOG_SQL_DSN` 配置了独立日志库时，可在页面左下角侧边栏随时在独立日志库与 MySQL 之间切换（无需重启，全局生效）
 
 ## 技术栈
 
@@ -63,7 +64,7 @@ docker compose up -d --build
 | `DB_PASSWORD` | _(必填)_ | 数据库密码 |
 | `DB_NAME` | `new-api` | 数据库名 |
 | `DB_TABLE_NAME` | `logs` | 日志表名 |
-| `LOG_SQL_DSN` | _(空)_ | 可选，`logs` 表的独立数据库 DSN（如 PostgreSQL）。设置后日志表从该库读取，其他表（如 `tokens`）仍走 MySQL |
+| `LOG_SQL_DSN` | _(空)_ | 可选，`logs` 表的独立数据库 DSN（如 PostgreSQL）。设置后日志表默认从该库读取，其他表（如 `tokens`）仍走 MySQL；可在页面左下角「数据源」中随时切换回 MySQL |
 | `PORT` | `8080` | 服务端口 |
 | `DATA_DIR` | `/data` | 价格配置持久化目录 |
 | `TZ` | `Asia/Shanghai` | 时区 |
@@ -81,6 +82,14 @@ docker compose up -d --build
 | GET | `/api/export/requests` | 导出请求明细 Excel（流式，超限自动分表，首Sheet为汇总） |
 | GET | `/api/prices` | 获取价格配置 |
 | POST | `/api/prices` | 保存价格配置 |
+| GET | `/api/datasource` | 获取当前日志数据源及可选数据源列表 |
+| POST | `/api/datasource` | 切换日志数据源（body: `{"source": "mysql" \| "log_sql"}`） |
+
+### 日志数据源切换
+
+- 未设置 `LOG_SQL_DSN` 时只有一个数据源（MySQL），侧边栏底部的选择框为禁用状态并给出提示。
+- 设置 `LOG_SQL_DSN` 后默认使用该独立库（`log_sql`），可在页面左下角侧边栏的「数据源」下拉框中手动切换为 `mysql`，切换后页面自动刷新并按新数据源重新查询。
+- 切换为运行时状态，重启服务后会恢复为默认数据源。
 
 ### 查询参数
 
@@ -134,4 +143,4 @@ npm run dev
 
 - 本服务只需要对 new-api 数据库的 **只读权限**
 - 价格配置持久化在 `./data/prices.json`（容器内挂载为 `/data`）
-- 若 new-api 将 `logs` 表单独存放在 PostgreSQL（通过 `LOG_SQL_DSN` 配置），设置该变量即可，`DB_*` 仍指向存放 `tokens` 等其他表的 MySQL 库
+- 若 new-api 将 `logs` 表单独存放在 PostgreSQL（通过 `LOG_SQL_DSN` 配置），设置该变量即可，`DB_*` 仍指向存放 `tokens` 等其他表的 MySQL 库；日志数据源可在页面左下角随时切换
